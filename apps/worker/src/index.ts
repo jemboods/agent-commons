@@ -31,6 +31,10 @@ type Participant = {
 type Session = { digest: string; participantId: string; expiresAt: number };
 type Invitation = { digest: string; role: Exclude<Role, 'owner' | 'moderator'>; name?: string; maxUses: number; uses: number; expiresAt: number };
 type Lockout = { key: string; failures: number; until: number };
+type SocketAttachment =
+  | { state: 'pending'; deadline: number }
+  | { state: 'authenticated'; participantId: string; sessionDigest: string }
+  | { state: 'closed' };
 type Env = { ROOMS: DurableObjectNamespace<RoomDurableObject> };
 
 function response(value: unknown, status = 200, extra: HeadersInit = {}): Response {
@@ -176,6 +180,7 @@ export class RoomDurableObject extends DurableObject<Env> {
         this.prune(room);
         await this.checkRate(request, room);
         const path = new URL(request.url).pathname;
+        if (path === `/api/rooms/${room.id}/ws`) return this.upgrade(request);
         const member = await this.authenticate(request, room, path);
         if (request.method === 'GET' && path === `/api/rooms/${room.id}`) {
           if (!member) return failure('UNAUTHORIZED', 401);
@@ -197,8 +202,93 @@ export class RoomDurableObject extends DurableObject<Env> {
         }
         return failure('NOT_FOUND', 404);
       } catch (error) { return errorResponse(error); }
+      finally {
+        const room = this.load();
+        if (room) await this.scheduleSocketAlarm(room);
+      }
     });
   }
+
+  private upgrade(request: Request): Response {
+    const url = new URL(request.url);
+    if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) || url.search || url.username || url.password) return failure('INVALID_REQUEST');
+    const originError = checkOrigin(request);
+    if (originError) return originError;
+    if (request.method !== 'GET') return failure('METHOD_NOT_ALLOWED', 405, { Allow: 'GET' });
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return failure('UPGRADE_REQUIRED', 426);
+    const sockets = this.ctx.getWebSockets().filter((socket) => this.attachment(socket).state !== 'closed');
+    if (sockets.length >= 200 || sockets.filter((socket) => this.attachment(socket).state === 'pending').length >= 16) return failure('RATE_LIMITED', 429);
+    const pair = new WebSocketPair();
+    this.ctx.acceptWebSocket(pair[1]);
+    pair[1].serializeAttachment({ state: 'pending', deadline: Date.now() + 10_000 } satisfies SocketAttachment);
+    return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    return this.exclusive(async () => {
+      const room = this.load();
+      if (!room || room.state !== 'active' || Date.parse(room.expiresAt) <= Date.now()) { this.closeSocket(socket, 'UNAUTHORIZED'); return; }
+      this.sweepSockets(room);
+      const attachment = this.attachment(socket);
+      if (attachment.state === 'closed') return;
+      if (attachment.state !== 'pending' || typeof message !== 'string' || new TextEncoder().encode(message).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      let frame: unknown;
+      try { frame = JSON.parse(message); } catch { frame = null; }
+      if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || frame.type !== 'join' || !isObject(frame.payload) || !allowedKeys(frame.payload, ['sessionToken']) || typeof frame.payload.sessionToken !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(frame.payload.sessionToken)) {
+        this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+      }
+      const hash = await digest(frame.payload.sessionToken);
+      const session = room.sessions.find((entry) => entry.digest === hash && entry.expiresAt > Date.now());
+      const member = session && room.participants.find((entry) => entry.id === session.participantId);
+      if (!session || !member) { this.closeSocket(socket, 'UNAUTHORIZED'); return; }
+      socket.serializeAttachment({ state: 'authenticated', participantId: member.id, sessionDigest: hash } satisfies SocketAttachment);
+      await this.scheduleSocketAlarm(room);
+      // Only server-validated membership reaches this outbound authorization boundary.
+      if (this.attachment(socket).state !== 'authenticated') return;
+      socket.send(JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'welcome', ts: iso(Date.now()),
+        payload: { room: publicRoom(room), self: publicParticipant(member), participants: room.participants.map(publicParticipant), liveOnly: true },
+      }));
+    });
+  }
+
+  private attachment(socket: WebSocket): SocketAttachment {
+    return (socket.deserializeAttachment() as SocketAttachment | null) ?? { state: 'closed' };
+  }
+  private closeSocket(socket: WebSocket, reason: string): void {
+    socket.serializeAttachment({ state: 'closed' } satisfies SocketAttachment);
+    socket.close(1008, reason);
+  }
+  private sweepSockets(room: Room): void {
+    const now = Date.now();
+    for (const socket of this.ctx.getWebSockets()) {
+      const auth = this.attachment(socket);
+      if (auth.state === 'closed') continue;
+      const valid = room.state === 'active' && Date.parse(room.expiresAt) > now && (auth.state === 'pending'
+        ? auth.deadline > now
+        : room.sessions.some((session) => session.digest === auth.sessionDigest && session.participantId === auth.participantId && session.expiresAt > now)
+          && room.participants.some((member) => member.id === auth.participantId));
+      if (!valid) this.closeSocket(socket, 'UNAUTHORIZED');
+    }
+  }
+  private async scheduleSocketAlarm(room: Room): Promise<void> {
+    this.sweepSockets(room);
+    let deadline = Date.parse(room.expiresAt);
+    for (const socket of this.ctx.getWebSockets()) {
+      const auth = this.attachment(socket);
+      if (auth.state === 'pending') deadline = Math.min(deadline, auth.deadline);
+      if (auth.state === 'authenticated') {
+        const session = room.sessions.find((item) => item.digest === auth.sessionDigest);
+        if (session) deadline = Math.min(deadline, session.expiresAt);
+      }
+    }
+    if (await this.ctx.storage.getAlarm() !== deadline) await this.ctx.storage.setAlarm(deadline);
+  }
+
+  webSocketClose(socket: WebSocket): void {
+    socket.serializeAttachment({ state: 'closed' } satisfies SocketAttachment);
+    socket.close();
+  }
+  webSocketError(socket: WebSocket): void { this.closeSocket(socket, 'SOCKET_ERROR'); }
 
   async alarm(): Promise<void> {
     return this.exclusive(async () => {
@@ -206,7 +296,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       if (!room || room.state !== 'active') { await this.destroy(); return; }
       const expiry = Date.parse(room.expiresAt);
       if (expiry > Date.now()) {
-        await this.ctx.storage.setAlarm(expiry);
+        await this.scheduleSocketAlarm(room);
         return;
       }
       await this.destroy();
@@ -225,8 +315,10 @@ export class RoomDurableObject extends DurableObject<Env> {
   }
   private save(room: Room): void {
     this.sql.exec('INSERT INTO room_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'room', JSON.stringify(room));
+    this.sweepSockets(room);
   }
   private async destroy(): Promise<void> {
+    for (const socket of this.ctx.getWebSockets()) this.closeSocket(socket, 'UNAUTHORIZED');
     this.sql.exec('DELETE FROM room_state');
     await this.ctx.storage.deleteAlarm();
   }

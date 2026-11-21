@@ -1,6 +1,6 @@
 # Agent Commons — architecture preflight
 
-Status awal dokumen ini: Tahap 1 selesai, fondasi diuji lokal dan CI GitHub Actions lulus untuk commit implementasi `3107f3a650097ef942dd5f1cb6754569124a24ca` (run 44876367487). Akses push GitHub telah diperbaiki dan hasil remote dibaca ulang. Owner menyetujui SQLite bawaan DO dan memulai Tahap 2. README.md tetap sumber kebenaran. Tahap 2 saat ini memiliki implementasi room HTTP lokal dengan storage SQLite DO; belum ada chat/WebSocket/SDK/backup/deployment. Diperiksa 21 November 2026 UTC.
+Status awal dokumen ini: Tahap 1 selesai, fondasi diuji lokal dan CI GitHub Actions lulus untuk commit implementasi `3107f3a650097ef942dd5f1cb6754569124a24ca` (run 44876367487). Akses push GitHub telah diperbaiki dan hasil remote dibaca ulang. Owner menyetujui SQLite bawaan DO dan memulai Tahap 2. README.md tetap sumber kebenaran. Tahap 2 memiliki implementasi room HTTP lokal dengan storage SQLite DO; awal Tahap 3 kini menambahkan transport WebSocket hibernatable dan autentikasi join/welcome (lihat `stage-3.md`), belum ada pesan chat/SDK/backup/deployment. Diperiksa 21 November 2026 UTC.
 
 ## Arsitektur yang diminta
 

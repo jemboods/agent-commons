@@ -1,6 +1,6 @@
-# API — Tahap 2 (Room)
+# API — Room dan awal Tahap 3 (WebSocket)
 
-Tahap 2 menyediakan room lokal melalui HTTP dan Durable Object SQLite-backed. API ini **bukan** chat real-time: belum ada WebSocket, presence, pesan, SDK, backup, atau model call. Worker dev dijalankan loopback; belum ada deployment.
+Room memakai HTTP dan Durable Object SQLite-backed. Slice awal Tahap 3 menambahkan autentikasi WebSocket hibernatable dan welcome; **chat/presence belum tersedia**. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
 
 ## Perilaku umum
 
@@ -35,6 +35,27 @@ Pembuatan room default 20 peserta dan 24 jam; kapasitas maksimum 100, durasi mak
 
 Status/error utama: `NOT_FOUND` (404), `INVALID_REQUEST` (400; body terlalu besar 413), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `ROOM_FULL` (409), `ROOM_EXPIRED` (410), `RATE_LIMITED` (429), dan `INTERNAL_ERROR` (500). Semua expiry divalidasi di setiap request; alarm menghapus state room yang kedaluwarsa.
 
+## WebSocket — slice autentikasi Tahap 3
+
+`GET /api/rooms/:id/ws` dengan `Upgrade: websocket` menghasilkan 101 tanpa roster/pesan awal. Gunakan `wss://` di luar loopback; HTTP hanya untuk `localhost`, `127.0.0.1`, atau `[::1]`. Query string ditolak seluruhnya, termasuk token. Browser wajib memenuhi allowlist Origin yang sama; native client boleh tanpa Origin tetapi tetap wajib join terautentikasi. Metode selain GET ditolak (405), upgrade yang hilang ditolak (426).
+
+Kirim satu frame teks JSON dalam 10 detik:
+
+```json
+{"v":1,"type":"join","payload":{"sessionToken":"SESSION_FROM_HTTP_JOIN"}}
+```
+
+Field tambahan, versi/tipe salah, biner, atau frame lebih dari 32 KiB UTF-8 ditutup dengan kode 1008 dan alasan `INVALID_MESSAGE`. Token tidak valid, lintas-room, kedaluwarsa, dicabut, atau join terlambat ditutup 1008 `UNAUTHORIZED`. Tidak ada kredensial atau input mentah dalam alasan penutupan. Frame lain, termasuk join kedua, belum didukung dan ditutup `INVALID_MESSAGE`.
+
+Setelah pemeriksaan session dan membership, server mengirim:
+
+```text
+{v:1, id:"evt_…", room:"r_…", type:"welcome", ts:"<ISO timestamp>",
+ payload:{room:<RoomView>, self:<Participant>, participants:[<Participant>], liveOnly:true}}
+```
+
+Welcome tidak berisi riwayat, secrets, atau token. Roster adalah membership, **bukan** status online. Socket memakai `acceptWebSocket` dan attachment berisi identitas peserta terverifikasi serta digest session, bukan bearer token. Maksimal 16 socket belum join dan 200 socket aktif per room, selain pembatasan request HTTP yang sudah ada. Alarm DO yang sama mengurus deadline join, expiry session, dan expiry room tanpa timer yang menahan hibernasi. Leave, eviksi session, atau penghancuran room menutup socket yang aksesnya dicabut; setiap batas otorisasi membaca state terkini. Fan-out chat baru akan ditambahkan di slice berikutnya dengan pemeriksaan yang sama.
+
 ## Batas tahap dan verifikasi
 
-Route HTTP hanya untuk fondasi room lokal. Tidak ada WebSocket, chat, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes Worker berada di `apps/worker/test/rooms.test.ts`; alur browser berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil.
+Belum ada chat, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.
