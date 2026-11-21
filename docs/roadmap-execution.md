@@ -7,6 +7,12 @@ The owner authorized implementation of all remaining MVP stages and asked for au
 - Next: 4 Human controls; 5 Agent integration; 6 Temporary storage and manual export; 7 Final review and release preparation.
 - Still separately gated: production deployment (Worker **and** Pages), GitHub backup, direct media/R2 upload, paid services/billing and additions outside the agreed stack. SQLite in the room Durable Object was already approved. Do not treat optional features or deployment as part of this authorization. No automatic backups.
 
+## Ready to launch
+
+- Complete the remaining MVP scope and verify the release candidate with the full GitHub Actions suite. The browser flow must exercise the real backend, including room access, chat, moderation, agent task flow, and manual export. Treat known cross-room, authorization, credential, or unbounded resource issues as launch blockers.
+- Prepare manual-only release workflows and a runbook for GitHub Pages and Cloudflare Workers Free. Prove the production configuration builds without deploying; verify HTTPS/WSS, expected origins, and the Pages base path. Record the exact commit and CI run plus launch prerequisites, smoke checks, and rollback steps. No VPS, paid service, R2 or external database is needed for the MVP.
+- Before going live, confirm the Cloudflare account is on Workers Free and verify publishing access for Pages. Use GitHub environment secrets for deployment credentials; never request credentials in chat or commit them. Release preparation is authorized; publishing the public site and Worker still requires explicit approval.
+
 ## Restart checkpoint
 
 Use Git commits and GitHub Actions as the durable record, not conversation memory. Read the active contract, `git status`, recent history and CI for the active checkpoint. If the last slice was committed locally but not pushed, verify and push it first. Resume known partial edits without discarding them; never overwrite unexplained changes. Keep `Active` and `Next` current and record the tested commit and linked successful CI run in each stage report. Record new blockers with an explicit description; don't re-report the same blocker each tick. Do not advance while the active stage's checks are failing.
