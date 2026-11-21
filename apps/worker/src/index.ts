@@ -12,6 +12,7 @@ const ROOM_REQUESTS_PER_MINUTE = 120;
 const MAX_SESSIONS_PER_PARTICIPANT = 5;
 const REPLY_TARGET_TTL_MS = 15 * 60 * 1000;
 const MAX_REPLY_TARGETS = 500;
+const TYPING_WINDOW_MS = 2_000;
 const ALLOWED_ORIGINS = new Set([
   'https://jemboods.github.io',
   'http://localhost:5173',
@@ -37,7 +38,7 @@ type Lockout = { key: string; failures: number; until: number };
 type SocketAttachment =
   | { state: 'pending'; deadline: number }
   | { state: 'authenticated'; participantId: string; sessionDigest: string }
-  | { state: 'closed' };
+  | { state: 'closed'; participantId?: string };
 type Env = { ROOMS: DurableObjectNamespace<RoomDurableObject> };
 
 function response(value: unknown, status = 200, extra: HeadersInit = {}): Response {
@@ -238,6 +239,13 @@ export class RoomDurableObject extends DurableObject<Env> {
       let frame: unknown;
       try { frame = JSON.parse(message); } catch { frame = null; }
       if (attachment.state === 'authenticated') {
+        if (isObject(frame) && frame.type === 'typing') {
+          if (!allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || Object.keys(frame.payload).length) {
+            this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+          }
+          this.sendTyping(socket, room, attachment);
+          return;
+        }
         this.sendChat(socket, room, attachment, frame);
         return;
       }
@@ -248,13 +256,16 @@ export class RoomDurableObject extends DurableObject<Env> {
       const session = room.sessions.find((entry) => entry.digest === hash && entry.expiresAt > Date.now());
       const member = session && room.participants.find((entry) => entry.id === session.participantId);
       if (!session || !member) { this.closeSocket(socket, 'UNAUTHORIZED'); return; }
+      const alreadyOnline = this.hasActiveConnection(room, member.id);
       socket.serializeAttachment({ state: 'authenticated', participantId: member.id, sessionDigest: hash } satisfies SocketAttachment);
       await this.scheduleSocketAlarm(room);
       // Only server-validated membership reaches this outbound authorization boundary.
       if (this.attachment(socket).state !== 'authenticated') return;
       socket.send(JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'welcome', ts: iso(Date.now()),
-        payload: { room: publicRoom(room), self: publicParticipant(member), participants: room.participants.map(publicParticipant), liveOnly: true },
+        payload: { room: publicRoom(room), self: publicParticipant(member),
+          participants: room.participants.map((participant) => ({ ...publicParticipant(participant), online: this.hasActiveConnection(room, participant.id) })), liveOnly: true },
       }));
+      if (!alreadyOnline) this.broadcastPresence(room, member.id, true, socket);
     });
   }
 
@@ -299,15 +310,57 @@ export class RoomDurableObject extends DurableObject<Env> {
     }
   }
 
+  // Ephemeral typing carries no content and is never persisted; one frame per window per participant.
+  private sendTyping(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>): void {
+    const member = room.participants.find((entry) => entry.id === auth.participantId);
+    if (!member || member.role === 'observer') return;
+    const now = Date.now();
+    this.prune(room);
+    const key = `typing:${member.id}`;
+    let budget = room.rate.find((entry) => entry.key === key);
+    if (!budget) { budget = { key, count: 0, until: now + TYPING_WINDOW_MS }; room.rate.push(budget); }
+    if (budget.count >= 1) return;
+    budget.count++;
+    this.save(room);
+    const event = JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'typing',
+      from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload: {},
+    });
+    this.sweepSockets(room);
+    for (const target of this.ctx.getWebSockets()) {
+      if (target !== socket && this.attachment(target).state === 'authenticated') target.send(event);
+    }
+  }
+
   private socketError(socket: WebSocket, room: Room, code: string): void {
     socket.send(JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'error', ts: iso(Date.now()), payload: { code } }));
+  }
+
+  private hasActiveConnection(room: Room, participantId: string): boolean {
+    const now = Date.now();
+    return this.ctx.getWebSockets().some((socket) => {
+      const auth = this.attachment(socket);
+      return auth.state === 'authenticated' && auth.participantId === participantId &&
+        room.sessions.some((session) => session.digest === auth.sessionDigest && session.participantId === participantId && session.expiresAt > now) &&
+        room.participants.some((participant) => participant.id === participantId);
+    });
+  }
+
+  private broadcastPresence(room: Room, participantId: string, online: boolean, except?: WebSocket): void {
+    const event = JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'presence', ts: iso(Date.now()),
+      payload: { participantId, online },
+    });
+    this.sweepSockets(room);
+    for (const target of this.ctx.getWebSockets()) {
+      if (target !== except && this.attachment(target).state === 'authenticated') target.send(event);
+    }
   }
 
   private attachment(socket: WebSocket): SocketAttachment {
     return (socket.deserializeAttachment() as SocketAttachment | null) ?? { state: 'closed' };
   }
   private closeSocket(socket: WebSocket, reason: string): void {
-    socket.serializeAttachment({ state: 'closed' } satisfies SocketAttachment);
+    const prior = this.attachment(socket);
+    socket.serializeAttachment({ state: 'closed', ...(prior.state === 'authenticated' ? { participantId: prior.participantId } : {}) } satisfies SocketAttachment);
     socket.close(1008, reason);
   }
   private sweepSockets(room: Room): void {
@@ -337,8 +390,16 @@ export class RoomDurableObject extends DurableObject<Env> {
   }
 
   webSocketClose(socket: WebSocket): void {
+    const prior = this.attachment(socket);
     socket.serializeAttachment({ state: 'closed' } satisfies SocketAttachment);
     socket.close();
+    if (prior.state !== 'authenticated') return;
+    // Presence goes offline only when the participant's last live connection is gone.
+    void this.exclusive(async () => {
+      const room = this.load();
+      if (!room || room.state !== 'active') return;
+      if (!this.hasActiveConnection(room, prior.participantId)) this.broadcastPresence(room, prior.participantId, false);
+    });
   }
   webSocketError(socket: WebSocket): void { this.closeSocket(socket, 'SOCKET_ERROR'); }
 

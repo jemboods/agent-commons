@@ -21,8 +21,27 @@ async function connect(room: Access, origin?: string) {
   socket.accept();
   return socket;
 }
-function message(socket: WebSocket): Promise<string> {
+function rawMessage(socket: WebSocket): Promise<string> {
   return new Promise((resolve) => socket.addEventListener('message', (event) => resolve(String(event.data)), { once: true }));
+}
+function matchingMessage(socket: WebSocket, predicate: (event: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener('message', listener);
+      reject(new Error('Timed out waiting for matching WebSocket event'));
+    }, 1000);
+    const listener = (messageEvent: MessageEvent) => {
+      const event = JSON.parse(String(messageEvent.data)) as Record<string, unknown>;
+      if (!predicate(event)) return;
+      clearTimeout(timeout);
+      socket.removeEventListener('message', listener);
+      resolve(event);
+    };
+    socket.addEventListener('message', listener);
+  });
+}
+function message(socket: WebSocket): Promise<string> {
+  return rawMessage(socket).then((raw) => JSON.parse(raw).type === 'presence' ? message(socket) : raw);
 }
 
 function closed(socket: WebSocket): Promise<CloseEvent> {
@@ -44,13 +63,123 @@ async function authenticated(room: Access) {
 }
 function outcome(socket: WebSocket): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    socket.addEventListener('message', (event) => resolve(JSON.parse(String(event.data))), { once: true });
+    const onMessage = (event: MessageEvent) => {
+      const parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+      if (parsed.type === 'presence') return;
+      socket.removeEventListener('message', onMessage);
+      resolve(parsed);
+    };
+    socket.addEventListener('message', onMessage);
     socket.addEventListener('close', (event) => resolve({ closed: event.reason }), { once: true });
   });
 }
 function chat(socket: WebSocket, payload: unknown) {
   socket.send(JSON.stringify({ v: 1, type: 'message', payload }));
 }
+
+it('broadcasts participant presence only on first connection and final disconnect', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const joined = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/join`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Presence guest', kind: 'human', accessCode: 'socket-test-code' }),
+  });
+  expect(joined.status).toBe(200);
+  const guest = await joined.json() as Access;
+  const events: Record<string, unknown>[] = [];
+  const observer = (event: MessageEvent) => events.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+  owner.addEventListener('message', observer);
+
+  try {
+    const online = matchingMessage(owner, (event) => event.type === 'presence' &&
+      (event.payload as Record<string, unknown>).participantId === guest.participant.id &&
+      (event.payload as Record<string, unknown>).online === true);
+    const first = await authenticated(guest);
+    expect(await online).toMatchObject({ type: 'presence', room: room.room.id,
+      payload: { participantId: guest.participant.id, online: true } });
+
+    const duplicate = await authenticated(guest);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(events.filter((event) => event.type === 'presence' &&
+      (event.payload as Record<string, unknown>).participantId === guest.participant.id)).toHaveLength(1);
+
+    duplicate.close();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(events.filter((event) => event.type === 'presence' &&
+      (event.payload as Record<string, unknown>).participantId === guest.participant.id &&
+      (event.payload as Record<string, unknown>).online === false)).toHaveLength(0);
+
+    const offline = matchingMessage(owner, (event) => event.type === 'presence' &&
+      (event.payload as Record<string, unknown>).participantId === guest.participant.id &&
+      (event.payload as Record<string, unknown>).online === false);
+    first.close();
+    expect(await offline).toMatchObject({ type: 'presence', room: room.room.id,
+      payload: { participantId: guest.participant.id, online: false } });
+  } finally { owner.removeEventListener('message', observer); owner.close(); }
+});
+
+it('relays rate-limited typing to other authorized connections without persisting content', async () => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  const watcher = await authenticated(room);
+  const events: Record<string, unknown>[] = [];
+  const observer = (event: MessageEvent) => events.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+  watcher.addEventListener('message', observer);
+  const typing = () => sender.send(JSON.stringify({ v: 1, type: 'typing', payload: {} }));
+  try {
+    const first = matchingMessage(watcher, (event) => event.type === 'typing');
+    typing();
+    expect(await first).toMatchObject({ v: 1, room: room.room.id, type: 'typing',
+      from: { id: room.participant.id, name: 'Owner', kind: 'human' }, payload: {} });
+    typing();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(events.filter((event) => event.type === 'typing')).toHaveLength(1);
+
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      expect(saved.recentMessages).toEqual([]);
+      saved.rate = saved.rate.map((entry: { key: string }) => entry.key.startsWith('typing:') ? { ...entry, until: Date.now() - 1 } : entry);
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+    const recovered = matchingMessage(watcher, (event) => event.type === 'typing');
+    typing();
+    expect(await recovered).toMatchObject({ type: 'typing', from: { id: room.participant.id } });
+  } finally { watcher.removeEventListener('message', observer); sender.close(); watcher.close(); }
+});
+
+it('rejects typing frames that carry extra fields or content', async () => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  try {
+    const rejected = outcome(sender);
+    sender.send(JSON.stringify({ v: 1, type: 'typing', payload: { text: 'smuggled' } }));
+    expect(await rejected).toEqual({ closed: 'INVALID_MESSAGE' });
+  } finally { sender.close(); }
+});
+
+it('drops typing from an observer while keeping the read connection open', async () => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  const watcher = await authenticated(room);
+  const events: Record<string, unknown>[] = [];
+  const observer = (event: MessageEvent) => events.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+  watcher.addEventListener('message', observer);
+  try {
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      saved.participants[0].role = 'observer';
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+    sender.send(JSON.stringify({ v: 1, type: 'typing', payload: {} }));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(events.filter((event) => event.type === 'typing')).toEqual([]);
+    const alive = outcome(sender);
+    chat(sender, { text: 'Still readable' });
+    expect(await alive).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+  } finally { watcher.removeEventListener('message', observer); sender.close(); watcher.close(); }
+});
 
 it('fans out a server-authored live chat event to authenticated room connections only', async () => {
   const room = await createRoom();
