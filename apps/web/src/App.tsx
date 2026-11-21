@@ -20,6 +20,7 @@ import {
   type RoomSnapshot,
   type SessionResponse,
 } from './api';
+import { useRoomChat, type ChatErrorCode, type ChatMessage, type ChatStatus } from './chat';
 
 type Connection = 'checking' | 'connected' | 'unavailable';
 type CredentialType = 'access-code' | 'invitation';
@@ -46,6 +47,21 @@ function toDateTimeLocal(value: string): string {
 
 function modeLabel(mode: RoomMode): string {
   return mode[0].toUpperCase() + mode.slice(1);
+}
+
+function chatStatusLabel(status: ChatStatus): string {
+  if (status === 'live') return 'Live chat connected';
+  if (status === 'connecting') return 'Connecting live chat…';
+  if (status === 'closed') return 'Live chat disconnected';
+  return 'Live chat idle';
+}
+
+function chatErrorText(code: ChatErrorCode): string {
+  if (code === 'FORBIDDEN') return 'You cannot send messages with your current role.';
+  if (code === 'RATE_LIMITED') return 'Slow down: the room is rate limiting your messages.';
+  if (code === 'UNAUTHORIZED') return 'Your live session is no longer authorized.';
+  if (code === 'SOCKET_ERROR') return 'The live connection failed. Reconnect when you are ready.';
+  return 'The server rejected that frame. Nothing was sent.';
 }
 
 export default function App() {
@@ -79,6 +95,14 @@ export default function App() {
   const [inviteExpiry, setInviteExpiry] = useState('3600');
   const [invitationToken, setInvitationToken] = useState('');
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
+  const [chatText, setChatText] = useState('');
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [mentionIds, setMentionIds] = useState<string[]>([]);
+  const chat = useRoomChat({
+    roomId: session?.room.id ?? '',
+    sessionToken: session?.sessionToken ?? '',
+    active: session !== null,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -346,6 +370,41 @@ export default function App() {
     }));
   }
 
+  function onSendChat(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!chatText.trim()) return;
+    const sent = chat.send(chatText, {
+      ...(replyTarget ? { replyTo: replyTarget.id } : {}),
+      mentions: mentionIds,
+    });
+    if (!sent) {
+      setNotice('');
+      setError('The live connection is not ready, so the message was not sent. Nothing is retried automatically.');
+      return;
+    }
+    setChatText('');
+    setReplyTarget(null);
+    setMentionIds([]);
+  }
+
+  function toggleMention(participantId: string) {
+    setMentionIds((current) => current.includes(participantId)
+      ? current.filter((id) => id !== participantId)
+      : [...current, participantId]);
+  }
+
+  const selfId = snapshot?.self.id ?? '';
+  const onlineIds = new Set(Object.entries(chat.online).filter(([, online]) => online).map(([id]) => id));
+  const typingNames = snapshot
+    ? snapshot.participants
+      .filter((participant) => participant.id !== selfId && (chat.typing[participant.id] ?? 0) > Date.now())
+      .map((participant) => participant.name)
+    : [];
+  const canSendChat = chat.status === 'live' && snapshot?.self.role !== 'observer';
+  const replyTargetText = replyTarget
+    ? chat.messages.find((message) => message.id === replyTarget.id)?.text ?? replyTarget.text
+    : '';
+
   const isOwner = snapshot?.self.role === 'owner';
 
   return (
@@ -364,7 +423,7 @@ export default function App() {
         <aside className="sidebar" aria-label="Room actions">
           <p className="eyebrow">Workspace</p>
           <p className="sidebar-note">Create a room or join one with a room ID and a credential.</p>
-          <div className="sidebar-foot">Stage 2 · Rooms</div>
+          <div className="sidebar-foot">Stage 3 · Live chat</div>
         </aside>
 
         <section className="main-panel">
@@ -394,18 +453,78 @@ export default function App() {
               {keySaved && <p className="notice">Owner key hidden. It will not be shown again.</p>}
               {isOwner && <p className="notice subtle-notice">Your owner session is held only in this page&apos;s memory.</p>}
 
+              <section className="panel-card chat-card" aria-labelledby="chat-heading">
+                <div className="card-heading">
+                  <div><p className="eyebrow">Live only · no history</p><h2 id="chat-heading">Room chat</h2></div>
+                  <span className={`chat-status ${chat.status}`} data-chat-status={chat.status}>{chatStatusLabel(chat.status)}</span>
+                </div>
+                {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
+                <p className="field-hint">Messages exist only while connections are live. Nothing is stored, replayed, or retried after a reconnect.</p>
+                {chat.status === 'closed' && (
+                  <div className="chat-reconnect">
+                    <p className="field-hint">The live connection closed{chat.closeReason ? ` (${chat.closeReason})` : ''}.</p>
+                    <button className="small-button" type="button" onClick={chat.reconnect}>Reconnect live chat</button>
+                  </div>
+                )}
+                <ol className="timeline" aria-label="Live timeline">
+                  {chat.messages.length === 0 && <li className="timeline-empty">No live messages yet.</li>}
+                  {chat.messages.map((message) => {
+                    const quoted = message.replyTo ? chat.messages.find((item) => item.id === message.replyTo) : undefined;
+                    return (
+                      <li className="timeline-item" key={message.id} data-testid="chat-message">
+                        <div className="timeline-meta">
+                          <strong>{message.from.name}</strong>
+                          <span>{message.from.kind}</span>
+                          <time dateTime={message.ts}>{new Date(message.ts).toLocaleTimeString()}</time>
+                        </div>
+                        {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
+                        <p className="timeline-text">{message.text}</p>
+                        {message.mentions && message.mentions.length > 0 && (
+                          <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
+                        )}
+                        <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
+                      </li>
+                    );
+                  })}
+                </ol>
+                {typingNames.length > 0 && <p className="typing-line" aria-live="polite">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
+                {canSendChat ? (
+                  <form className="chat-form" aria-label="Send a live message" onSubmit={onSendChat}>
+                    {replyTarget && (
+                      <div className="reply-banner">
+                        <span>Replying to {replyTarget.from.name}: {replyTargetText.slice(0, 60)}</span>
+                        <button className="small-button" type="button" aria-label="Cancel reply" onClick={() => setReplyTarget(null)}>Cancel</button>
+                      </div>
+                    )}
+                    {mentionIds.length > 0 && (
+                      <p className="field-hint">Mentions: {mentionIds.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
+                    )}
+                    <label className="field-label" htmlFor="chat-message-text">Message</label>
+                    <textarea id="chat-message-text" className="text-input textarea" rows={3} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} placeholder="Plain text only. Markdown and links stay inert." />
+                    <button className="primary-button" type="submit" disabled={!chatText.trim()}>Send message</button>
+                  </form>
+                ) : (
+                  chat.status === 'live' && <p className="field-hint">You are an observer in this room: live messages are readable, sending is disabled.</p>
+                )}
+              </section>
+
               <section className="panel-card roster-card" aria-labelledby="roster-heading">
                 <div className="card-heading"><div><p className="eyebrow">Membership only</p><h2 id="roster-heading">Participants <span className="count-pill">{snapshot.participants.length}/{snapshot.room.maxParticipants}</span></h2></div><span className="card-symbol" aria-hidden="true">◉</span></div>
-                <p className="field-hint">This is a server snapshot. It does not indicate who is currently online.</p>
+                <p className="field-hint">Online status comes from each participant&apos;s live connection; the roster itself is a server snapshot of membership.</p>
                 <ul className="participant-list">
                   {snapshot.participants.map((participant) => {
                     const draft = roleDrafts[participant.id] ?? { role: participant.role === 'owner' ? 'human' : participant.role, canInstruct: participant.canInstruct };
+                    const online = onlineIds.has(participant.id);
                     return (
                       <li className="participant-row" key={participant.id}>
                         <div className="participant-identity">
+                          <span className={`presence-dot ${online ? 'online' : 'offline'}`} role="img" aria-label={`${participant.name} ${online ? 'online' : 'offline'}`} />
                           <span className="avatar" aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                           <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}</span></div>
                         </div>
+                        {participant.id !== snapshot.self.id && (
+                          <button className="small-button" type="button" aria-pressed={mentionIds.includes(participant.id)} aria-label={`Mention ${participant.name}`} onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
+                        )}
                         {isOwner && participant.role !== 'owner' && (
                           <div className="role-controls">
                             <label className="sr-only" htmlFor={`role-${participant.id}`}>Participant role for {participant.name}</label>
@@ -479,7 +598,7 @@ export default function App() {
             </div>
           ) : (
             <>
-              <div className="page-heading"><p className="eyebrow">A shared space for people and agents</p><h1>Rooms</h1><p>Create a room or join an existing one. Membership is shown as a snapshot, not online presence.</p></div>
+              <div className="page-heading"><p className="eyebrow">A shared space for people and agents</p><h1>Rooms</h1><p>Create a room or join an existing one. Membership is a server snapshot; live chat shows who is actually connected.</p></div>
               <div className="entry-grid">
                 <section className="form-card" aria-labelledby="create-room-heading">
                   <div className="card-heading"><div><p className="eyebrow">Start a workspace</p><h2 id="create-room-heading">Create a room</h2></div><span className="card-symbol" aria-hidden="true">＋</span></div>

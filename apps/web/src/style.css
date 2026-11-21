@@ -153,3 +153,25 @@ textarea.text-input { resize: vertical; }
   .form-card, .panel-card, .secret-card { padding: 16px; }
   .split-fields { grid-template-columns: 1fr; gap: 0; }
 }
+
+.chat-card { margin-bottom: 17px; }
+.chat-status { flex: 0 0 auto; padding: 5px 10px; border: 1px solid #3a4540; border-radius: 999px; background: #202724; color: var(--muted); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.chat-status.live { border-color: #3f7a5c; background: #17281f; color: #9fe7c1; }
+.chat-status.connecting { border-color: #6d6444; background: #262017; color: #eed9a3; }
+.chat-status.closed { border-color: #7b4943; background: #2f211f; color: var(--red); }
+.chat-reconnect { margin: 0 0 13px; padding: 10px 12px; border: 1px dashed #4c5a53; border-radius: 9px; }
+.chat-reconnect .field-hint { margin: 0 0 9px; }
+.timeline { list-style: none; margin: 0 0 14px; padding: 0; max-height: 360px; overflow-y: auto; border: 1px solid #2c3531; border-radius: 10px; background: #131816; }
+.timeline-empty { padding: 18px 14px; color: var(--faint); font-size: 12px; }
+.timeline-item { padding: 12px 14px; border-top: 1px solid #232b27; }
+.timeline-item:first-child { border-top: 0; }
+.timeline-meta { display: flex; align-items: baseline; gap: 8px; color: var(--faint); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+.timeline-meta strong { color: #d9e6de; font-size: 11px; letter-spacing: .02em; text-transform: none; }
+.timeline-text { margin: 7px 0 9px; color: #e8efeb; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reply-quote { margin: 7px 0 0; padding: 7px 10px; border-left: 2px solid #4b6b5a; background: #171e1a; color: var(--muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.mention-line { margin: 0 0 9px; color: #a9cbb8; font-size: 11px; }
+.typing-line { margin: 0 0 10px; color: var(--mint); font-size: 11px; font-style: italic; }
+.chat-form textarea { resize: vertical; min-height: 84px; }
+.reply-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; padding: 9px 11px; border: 1px solid #46604f; border-radius: 8px; background: #1a2420; color: #c3d7ca; font-size: 11px; overflow-wrap: anywhere; }
+.presence-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #535f58; box-shadow: 0 0 0 3px #535f5818; }
+.presence-dot.online { background: #69d5a5; box-shadow: 0 0 0 3px #69d5a51c; }
