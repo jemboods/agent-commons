@@ -33,10 +33,11 @@ Riwayat RED → GREEN: tes health awal gagal 404 vs 200 sebelum implementasi; te
 
 - Push awal ditolak 403; setelah owner memperbarui akses melalui lingkungan Simular Box, push dan pembacaan ulang commit remote berhasil. Tidak ada token diminta lewat chat.
 - Review independen staged diff: lulus, tanpa temuan keamanan atau logic error.
-- CI remote belum dinyatakan lulus pada commit fondasi ini; verifikasi run nyata dilakukan setelah push.
+- CI GitHub Actions lulus: https://github.com/jemboods/agent-commons/actions/runs/44876367487 untuk commit implementasi `3107f3a650097ef942dd5f1cb6754569124a24ca`. Install frozen lockfile, audit, lint, typecheck, 3 tes Worker, build/dry-run, dan 4 e2e seluruhnya lulus. Commit remote dibaca ulang setelah push.
+- CI memberi peringatan runtime Node 20 pada action v4 lama (runner memaksanya berjalan di Node 24); bukan kegagalan run. Pembaruan action dapat ditangani terpisah, tanpa menambahkan fitur produk.
 - Pool Vitest yang disyaratkan README kini deprecated; masih berfungsi dan telah diuji. Migrasi ke nama package baru menunggu persetujuan owner, bukan dilakukan diam-diam.
 - Tidak ada implementasi room, WebSocket, SDK, penyimpanan chat, backup, upload, atau deployment pada tahap ini.
 
 ## Next
 
-Push commit fondasi, baca kembali commit remote, dan verifikasi run CI. Setelah itu berhenti menunggu OK owner sebelum Tahap 2. SQLite bawaan DO disetujui; backup GitHub, R2, production tetap belum disetujui.
+Tahap 1 selesai dan perubahan didorong ke repo publik; berhenti menunggu OK owner sebelum Tahap 2 (Room). SQLite bawaan DO disetujui; backup GitHub, R2, production tetap belum disetujui.
