@@ -1,0 +1,539 @@
+import { useEffect, useState, type FormEvent } from 'react';
+import {
+  ApiError,
+  checkHealth,
+  createInvitation,
+  createRoom,
+  deleteRoom,
+  getRoom,
+  joinRoom,
+  leaveRoom,
+  recoverOwner,
+  updateAccessCode,
+  updateParticipant,
+  updateRoom,
+  type CreateRoomResponse,
+  type Participant,
+  type ParticipantKind,
+  type ParticipantRole,
+  type RoomMode,
+  type RoomSnapshot,
+  type SessionResponse,
+} from './api';
+
+type Connection = 'checking' | 'connected' | 'unavailable';
+type CredentialType = 'access-code' | 'invitation';
+type RoleDraft = { role: Exclude<ParticipantRole, 'owner'>; canInstruct: boolean };
+
+function errorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return 'The server could not be reached. Your credentials were not saved.';
+  if (error.code === 'ROOM_FULL') return 'This room is full.';
+  if (error.code === 'ROOM_EXPIRED') return 'This room has expired.';
+  if (error.code === 'FORBIDDEN') return 'This action is not allowed for your membership.';
+  if (error.code === 'RATE_LIMITED') return 'Too many failed credentials. Try again later.';
+  if (error.code === 'UNAUTHORIZED' || error.code.includes('INVALID') || error.code.includes('EXPIRED')) {
+    return 'The room ID or credential is invalid or expired.';
+  }
+  if (error.code.includes('PRIVATE')) return 'This room only accepts invited participants.';
+  return 'The request was rejected. Check the room details and try again.';
+}
+
+function toDateTimeLocal(value: string): string {
+  const date = new Date(value);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function modeLabel(mode: RoomMode): string {
+  return mode[0].toUpperCase() + mode.slice(1);
+}
+
+export default function App() {
+  const [connection, setConnection] = useState<Connection>('checking');
+  const [roomName, setRoomName] = useState('');
+  const [ownerName, setOwnerName] = useState('');
+  const [accessCode, setAccessCode] = useState('');
+  const [joinRoomId, setJoinRoomId] = useState('');
+  const [joinName, setJoinName] = useState('');
+  const [joinKind, setJoinKind] = useState<ParticipantKind>('human');
+  const [credentialType, setCredentialType] = useState<CredentialType>('access-code');
+  const [joinCredential, setJoinCredential] = useState('');
+  const [recoveryRoomId, setRecoveryRoomId] = useState('');
+  const [recoveryKey, setRecoveryKey] = useState('');
+  const [session, setSession] = useState<SessionResponse | null>(null);
+  const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  const [ownerKey, setOwnerKey] = useState<string | null>(null);
+  const [keySaved, setKeySaved] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [settingsName, setSettingsName] = useState('');
+  const [settingsDescription, setSettingsDescription] = useState('');
+  const [settingsMode, setSettingsMode] = useState<RoomMode>('hybrid');
+  const [settingsMaxParticipants, setSettingsMaxParticipants] = useState('20');
+  const [settingsExpiresAt, setSettingsExpiresAt] = useState('');
+  const [newAccessCode, setNewAccessCode] = useState('');
+  const [inviteRole, setInviteRole] = useState<'human' | 'agent' | 'observer'>('human');
+  const [inviteName, setInviteName] = useState('');
+  const [inviteMaxUses, setInviteMaxUses] = useState('1');
+  const [inviteExpiry, setInviteExpiry] = useState('3600');
+  const [invitationToken, setInvitationToken] = useState('');
+  const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
+
+  useEffect(() => {
+    const controller = new AbortController();
+    checkHealth(controller.signal)
+      .then(async (response) => {
+        const data: unknown = await response.json();
+        if (!response.ok || typeof data !== 'object' || data === null ||
+            !('service' in data) || data.service !== 'agent-commons' ||
+            !('status' in data) || data.status !== 'ok' ||
+            !('stage' in data) || data.stage !== 1) {
+          throw new Error('Invalid health response');
+        }
+        setConnection('connected');
+      })
+      .catch(() => { if (!controller.signal.aborted) setConnection('unavailable'); });
+    return () => controller.abort();
+  }, []);
+
+  function clearMessages() {
+    setError('');
+    setNotice('');
+  }
+
+  function showError(requestError: unknown) {
+    setError(errorMessage(requestError));
+    setNotice('');
+  }
+
+  function applySnapshot(next: RoomSnapshot) {
+    setSnapshot(next);
+    setSettingsName(next.room.name);
+    setSettingsDescription(next.room.description);
+    setSettingsMode(next.room.mode);
+    setSettingsMaxParticipants(String(next.room.maxParticipants));
+    setSettingsExpiresAt(toDateTimeLocal(next.room.expiresAt));
+  }
+
+  async function enterSession(result: SessionResponse, initialSnapshot?: RoomSnapshot) {
+    setSession(result);
+    setJoinRoomId('');
+    setJoinName('');
+    setJoinCredential('');
+    setRecoveryRoomId('');
+    setRecoveryKey('');
+    if (initialSnapshot) applySnapshot(initialSnapshot);
+    else applySnapshot(await getRoom(result.room.id, result.sessionToken));
+  }
+
+  async function onCreateRoom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    clearMessages();
+    setBusy(true);
+    try {
+      const result: CreateRoomResponse = await createRoom({ name: roomName, ownerName, accessCode });
+      const { ownerKey: createdOwnerKey, ...sessionResponse } = result;
+      const initialSnapshot: RoomSnapshot = { room: result.room, participants: [result.participant], self: result.participant };
+      setOwnerKey(createdOwnerKey);
+      setKeySaved(false);
+      await enterSession(sessionResponse, initialSnapshot);
+      setRoomName('');
+      setOwnerName('');
+      setAccessCode('');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onJoinRoom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    clearMessages();
+    setBusy(true);
+    try {
+      const credential = credentialType === 'access-code' ? { accessCode: joinCredential } : { invitationToken: joinCredential };
+      const result = await joinRoom(joinRoomId.trim(), { name: joinName, kind: joinKind, ...credential });
+      await enterSession(result);
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRecoverOwner(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    clearMessages();
+    setBusy(true);
+    try {
+      const result = await recoverOwner(recoveryRoomId.trim(), recoveryKey);
+      await enterSession(result);
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshSnapshot() {
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      applySnapshot(await getRoom(session.room.id, session.sessionToken));
+      setNotice('Room snapshot refreshed.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSaveSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      const result = await updateRoom(session.room.id, session.sessionToken, {
+        name: settingsName,
+        description: settingsDescription,
+        mode: settingsMode,
+        maxParticipants: Number(settingsMaxParticipants),
+        expiresAt: new Date(settingsExpiresAt).toISOString(),
+      });
+      if (snapshot) applySnapshot({ ...snapshot, room: result.room });
+      setNotice('Room settings saved.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRotateAccessCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await updateAccessCode(session.room.id, session.sessionToken, newAccessCode);
+      setNewAccessCode('');
+      setNotice('Access code updated.');
+      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: true } });
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDisableAccessCode() {
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await updateAccessCode(session.room.id, session.sessionToken, null);
+      setNotice('Access code disabled.');
+      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: false } });
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCreateInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      const result = await createInvitation(session.room.id, session.sessionToken, {
+        role: inviteRole,
+        ...(inviteName.trim() ? { name: inviteName.trim() } : {}),
+        maxUses: Number(inviteMaxUses),
+        expiresInSeconds: Number(inviteExpiry),
+      });
+      setInvitationToken(result.invitationToken);
+      setInviteName('');
+      setNotice('Invitation created. Copy it now; it is shown only in this page.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSaveParticipant(participant: Participant) {
+    if (!session) return;
+    const draft = roleDrafts[participant.id] ?? { role: participant.role as Exclude<ParticipantRole, 'owner'>, canInstruct: participant.canInstruct };
+    clearMessages();
+    setBusy(true);
+    try {
+      const result = await updateParticipant(session.room.id, session.sessionToken, participant.id, {
+        role: draft.role,
+        ...(draft.role === 'moderator' ? { canInstruct: draft.canInstruct } : {}),
+      });
+      if (snapshot) {
+        const participants = snapshot.participants.map((item) => item.id === participant.id ? result.participant : item);
+        applySnapshot({ ...snapshot, participants, self: snapshot.self.id === participant.id ? result.participant : snapshot.self });
+      }
+      setRoleDrafts((current) => {
+        const next = { ...current };
+        delete next[participant.id];
+        return next;
+      });
+      setNotice(`Role updated for ${participant.name}.`);
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLeaveRoom() {
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await leaveRoom(session.room.id, session.sessionToken);
+      setSession(null);
+      setSnapshot(null);
+      setOwnerKey(null);
+      setInvitationToken('');
+      setNotice('You left the room.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDeleteRoom() {
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await deleteRoom(session.room.id, session.sessionToken);
+      setSession(null);
+      setSnapshot(null);
+      setOwnerKey(null);
+      setInvitationToken('');
+      setNotice('Room deleted.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function dismissOwnerKey() {
+    setOwnerKey(null);
+    setKeySaved(true);
+  }
+
+  function updateRoleDraft(participant: Participant, value: Partial<RoleDraft>) {
+    setRoleDrafts((current) => ({
+      ...current,
+      [participant.id]: {
+        role: current[participant.id]?.role ?? (participant.role === 'owner' ? 'human' : participant.role),
+        canInstruct: current[participant.id]?.canInstruct ?? participant.canInstruct,
+        ...value,
+      },
+    }));
+  }
+
+  const isOwner = snapshot?.self.role === 'owner';
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="./" aria-label="Agent Commons home">
+          <span className="brand-mark" aria-hidden="true">AC</span><span>Agent Commons</span>
+        </a>
+        <div className="connection" role="status" aria-live="polite">
+          <span className={`connection-dot ${connection}`} aria-hidden="true" />
+          {connection === 'checking' ? 'Checking local Worker…' : connection === 'connected' ? 'Local Worker connected' : 'Local Worker unavailable'}
+        </div>
+      </header>
+
+      <div className="workspace">
+        <aside className="sidebar" aria-label="Room actions">
+          <p className="eyebrow">Workspace</p>
+          <p className="sidebar-note">Create a room or join one with a room ID and a credential.</p>
+          <div className="sidebar-foot">Stage 2 · Rooms</div>
+        </aside>
+
+        <section className="main-panel">
+          {error && <p className="error-banner" role="alert">{error}</p>}
+          {notice && <p className="notice" role="status">{notice}</p>}
+          {snapshot && session ? (
+            <div className="room-view">
+              <div className="page-heading room-title-row">
+                <div>
+                  <p className="eyebrow">Room snapshot · {modeLabel(snapshot.room.mode)}</p>
+                  <h1>{snapshot.room.name}</h1>
+                  <p className="room-id">Room ID: {snapshot.room.id}</p>
+                  {snapshot.room.description && <p>{snapshot.room.description}</p>}
+                </div>
+                <button className="secondary-button" type="button" onClick={refreshSnapshot} disabled={busy}>{busy ? 'Working…' : 'Refresh roster'}</button>
+              </div>
+
+              {ownerKey && !keySaved && (
+                <section className="secret-card" aria-labelledby="owner-key-heading">
+                  <p id="owner-key-heading" className="eyebrow">Owner key — shown once</p>
+                  <p>Keep this key somewhere safe. It is needed to recover owner access.</p>
+                  <label className="field-label" htmlFor="owner-key">Owner key</label>
+                  <input id="owner-key" className="text-input secret-input" value={ownerKey} readOnly />
+                  <button className="small-button" type="button" onClick={dismissOwnerKey}>I saved the owner key</button>
+                </section>
+              )}
+              {keySaved && <p className="notice">Owner key hidden. It will not be shown again.</p>}
+              {isOwner && <p className="notice subtle-notice">Your owner session is held only in this page&apos;s memory.</p>}
+
+              <section className="panel-card roster-card" aria-labelledby="roster-heading">
+                <div className="card-heading"><div><p className="eyebrow">Membership only</p><h2 id="roster-heading">Participants <span className="count-pill">{snapshot.participants.length}/{snapshot.room.maxParticipants}</span></h2></div><span className="card-symbol" aria-hidden="true">◉</span></div>
+                <p className="field-hint">This is a server snapshot. It does not indicate who is currently online.</p>
+                <ul className="participant-list">
+                  {snapshot.participants.map((participant) => {
+                    const draft = roleDrafts[participant.id] ?? { role: participant.role === 'owner' ? 'human' : participant.role, canInstruct: participant.canInstruct };
+                    return (
+                      <li className="participant-row" key={participant.id}>
+                        <div className="participant-identity">
+                          <span className="avatar" aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                          <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}</span></div>
+                        </div>
+                        {isOwner && participant.role !== 'owner' && (
+                          <div className="role-controls">
+                            <label className="sr-only" htmlFor={`role-${participant.id}`}>Participant role for {participant.name}</label>
+                            <select id={`role-${participant.id}`} className="text-input compact-input" value={draft.role} onChange={(event) => updateRoleDraft(participant, { role: event.target.value as Exclude<ParticipantRole, 'owner'> })}>
+                              {participant.kind === 'human' && <><option value="human">Human</option><option value="moderator">Moderator</option></>}
+                              {participant.kind === 'agent' && <option value="agent">Agent</option>}
+                              <option value="observer">Observer</option>
+                            </select>
+                            {draft.role === 'moderator' && <label className="saved-check compact-check"><input type="checkbox" checked={draft.canInstruct} onChange={(event) => updateRoleDraft(participant, { canInstruct: event.target.checked })} /><span>Can instruct</span></label>}
+                            <button className="small-button" type="button" onClick={() => onSaveParticipant(participant)} disabled={busy} aria-label={`Save role for ${participant.name}`}>Save</button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+
+              {isOwner && (
+                <div className="management-grid">
+                  <section className="panel-card" aria-labelledby="settings-heading">
+                    <div className="card-heading"><div><p className="eyebrow">Owner controls</p><h2 id="settings-heading">Room settings</h2></div></div>
+                    <form onSubmit={onSaveSettings}>
+                      <label className="field-label" htmlFor="room-name-setting">Room name</label>
+                      <input id="room-name-setting" className="text-input" aria-label="Room name setting" value={settingsName} onChange={(event) => setSettingsName(event.target.value)} required maxLength={80} />
+                      <label className="field-label" htmlFor="room-description-setting">Description</label>
+                      <textarea id="room-description-setting" className="text-input textarea" aria-label="Room description setting" value={settingsDescription} onChange={(event) => setSettingsDescription(event.target.value)} maxLength={500} rows={3} />
+                      <label className="field-label" htmlFor="room-mode-setting">Access mode</label>
+                      <select id="room-mode-setting" className="text-input" aria-label="Room access mode" value={settingsMode} onChange={(event) => setSettingsMode(event.target.value as RoomMode)}><option value="public">Public — access code or invite</option><option value="private">Private — invitation only</option><option value="hybrid">Hybrid — either credential</option></select>
+                      <label className="field-label" htmlFor="max-participants-setting">Maximum participants</label>
+                      <input id="max-participants-setting" className="text-input" type="number" min={snapshot.participants.length} max={100} value={settingsMaxParticipants} onChange={(event) => setSettingsMaxParticipants(event.target.value)} required />
+                      <label className="field-label" htmlFor="room-expiry-setting">Room expires</label>
+                      <input id="room-expiry-setting" className="text-input" type="datetime-local" aria-label="Room expiry" min={toDateTimeLocal(new Date().toISOString())} value={settingsExpiresAt} onChange={(event) => setSettingsExpiresAt(event.target.value)} required />
+                      <button className="primary-button" type="submit" disabled={busy}>Save room settings</button>
+                    </form>
+                  </section>
+
+                  <section className="panel-card" aria-labelledby="access-code-heading">
+                    <div className="card-heading"><div><p className="eyebrow">Credential control</p><h2 id="access-code-heading">Access code</h2></div></div>
+                    <p className="field-hint">{snapshot.room.accessCodeEnabled ? 'Enabled. Existing sessions are not affected by rotation.' : 'Disabled. Invitations remain available.'}</p>
+                    <form onSubmit={onRotateAccessCode}>
+                      <label className="field-label" htmlFor="new-access-code">New access code</label>
+                      <input id="new-access-code" className="text-input" type="password" autoComplete="new-password" minLength={12} maxLength={128} value={newAccessCode} onChange={(event) => setNewAccessCode(event.target.value)} required />
+                      <button className="primary-button" type="submit" disabled={busy}>Rotate access code</button>
+                    </form>
+                    {snapshot.room.accessCodeEnabled && <button className="danger-quiet" type="button" onClick={onDisableAccessCode} disabled={busy}>Disable access code</button>}
+                  </section>
+
+                  <section className="panel-card" aria-labelledby="invitation-heading">
+                    <div className="card-heading"><div><p className="eyebrow">One-time credential</p><h2 id="invitation-heading">Invite a participant</h2></div></div>
+                    <form onSubmit={onCreateInvitation}>
+                      <label className="field-label" htmlFor="invitation-role">Invitation role</label>
+                      <select id="invitation-role" className="text-input" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'human' | 'agent' | 'observer')}><option value="human">Human</option><option value="agent">Agent</option><option value="observer">Observer</option></select>
+                      <label className="field-label" htmlFor="invitation-name">Name (optional)</label>
+                      <input id="invitation-name" className="text-input" aria-label="Invitation name (optional)" value={inviteName} onChange={(event) => setInviteName(event.target.value)} maxLength={60} />
+                      <div className="split-fields">
+                        <div><label className="field-label" htmlFor="invitation-uses">Uses</label><input id="invitation-uses" className="text-input" type="number" min={1} max={100} value={inviteMaxUses} onChange={(event) => setInviteMaxUses(event.target.value)} required /></div>
+                        <div><label className="field-label" htmlFor="invitation-expiry">Expires in seconds</label><input id="invitation-expiry" className="text-input" type="number" min={1} max={86400} value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value)} required /></div>
+                      </div>
+                      <button className="primary-button" type="submit" disabled={busy}>Create invitation</button>
+                    </form>
+                    {invitationToken && <div className="secret-result"><label className="field-label" htmlFor="invitation-token">Invitation token</label><input id="invitation-token" className="text-input secret-input" value={invitationToken} readOnly /><button className="small-button" type="button" onClick={() => setInvitationToken('')}>Hide invitation token</button></div>}
+                  </section>
+                </div>
+              )}
+
+              <div className="room-footer-actions">
+                {!isOwner && <button className="secondary-button" type="button" onClick={onLeaveRoom} disabled={busy}>Leave room</button>}
+                {isOwner && <button className="danger-button" type="button" onClick={onDeleteRoom} disabled={busy}>Delete room</button>}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="page-heading"><p className="eyebrow">A shared space for people and agents</p><h1>Rooms</h1><p>Create a room or join an existing one. Membership is shown as a snapshot, not online presence.</p></div>
+              <div className="entry-grid">
+                <section className="form-card" aria-labelledby="create-room-heading">
+                  <div className="card-heading"><div><p className="eyebrow">Start a workspace</p><h2 id="create-room-heading">Create a room</h2></div><span className="card-symbol" aria-hidden="true">＋</span></div>
+                  <form aria-label="Create room" onSubmit={onCreateRoom}>
+                    <label className="field-label" htmlFor="room-name">Room name</label>
+                    <input id="room-name" className="text-input" value={roomName} onChange={(event) => setRoomName(event.target.value)} required maxLength={80} />
+                    <label className="field-label" htmlFor="owner-name">Owner name</label>
+                    <input id="owner-name" className="text-input" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} required maxLength={60} />
+                    <label className="field-label" htmlFor="access-code">Access code (at least 12 characters)</label>
+                    <input id="access-code" className="text-input" type="password" autoComplete="new-password" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} required minLength={12} maxLength={128} />
+                    <p className="field-hint">The code lets people request access. It never grants owner rights.</p>
+                    <button className="primary-button" type="submit" disabled={busy || connection !== 'connected'}>{busy ? 'Creating…' : 'Create room'}</button>
+                  </form>
+                </section>
+
+                <section className="form-card" aria-labelledby="join-room-heading">
+                  <div className="card-heading"><div><p className="eyebrow">Use a room credential</p><h2 id="join-room-heading">Join a room</h2></div><span className="card-symbol" aria-hidden="true">↗</span></div>
+                  <form aria-label="Join room" onSubmit={onJoinRoom}>
+                    <label className="field-label" htmlFor="join-room-id">Room ID</label>
+                    <input id="join-room-id" className="text-input" value={joinRoomId} onChange={(event) => setJoinRoomId(event.target.value)} required autoComplete="off" />
+                    <p className="field-hint">Use the room ID and either its access code or an invitation token.</p>
+                    <label className="field-label" htmlFor="join-name">Your name</label>
+                    <input id="join-name" className="text-input" value={joinName} onChange={(event) => setJoinName(event.target.value)} required maxLength={60} />
+                    <label className="field-label" htmlFor="participant-kind">Participant type</label>
+                    <select id="participant-kind" className="text-input" value={joinKind} onChange={(event) => setJoinKind(event.target.value as ParticipantKind)}><option value="human">Human</option><option value="agent">Agent</option></select>
+                    <label className="field-label" htmlFor="credential-type">Credential type</label>
+                    <select id="credential-type" className="text-input" value={credentialType} onChange={(event) => { setCredentialType(event.target.value as CredentialType); setJoinCredential(''); }}><option value="access-code">Access code</option><option value="invitation">Invitation</option></select>
+                    <label className="field-label" htmlFor="join-credential">{credentialType === 'access-code' ? 'Access code to join' : 'Invitation token'}</label>
+                    <input id="join-credential" className="text-input" type="password" autoComplete="off" value={joinCredential} onChange={(event) => setJoinCredential(event.target.value)} required />
+                    <button className="primary-button" type="submit" disabled={busy || connection !== 'connected'}>{busy ? 'Joining…' : 'Join room'}</button>
+                  </form>
+                </section>
+
+                <section className="form-card recovery-card" aria-labelledby="recovery-heading">
+                  <div className="card-heading"><div><p className="eyebrow">Owner recovery</p><h2 id="recovery-heading">Recover owner access</h2></div><span className="card-symbol" aria-hidden="true">⌁</span></div>
+                  <form aria-label="Recover owner access" onSubmit={onRecoverOwner}>
+                    <label className="field-label" htmlFor="recovery-room-id">Room ID to recover</label>
+                    <input id="recovery-room-id" className="text-input" value={recoveryRoomId} onChange={(event) => setRecoveryRoomId(event.target.value)} required autoComplete="off" />
+                    <label className="field-label" htmlFor="recovery-owner-key">Owner key for recovery</label>
+                    <input id="recovery-owner-key" className="text-input" type="password" autoComplete="off" value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} required />
+                    <p className="field-hint">The owner key is only for recovery. It is not stored by this page.</p>
+                    <button className="primary-button" type="submit" disabled={busy || connection !== 'connected'}>{busy ? 'Recovering…' : 'Recover owner access'}</button>
+                  </form>
+                </section>
+              </div>
+            </>
+          )}
+        </section>
+
+        <aside className="details-panel" aria-label="Room information">
+          <p className="eyebrow">Room snapshot</p><p className="sidebar-note">No participant or agent activity is simulated.</p>
+          {snapshot && <dl className="room-facts"><div><dt>Access mode</dt><dd>{modeLabel(snapshot.room.mode)}</dd></div><div><dt>Access code</dt><dd>{snapshot.room.accessCodeEnabled ? 'Enabled' : 'Disabled'}</dd></div><div><dt>Expires</dt><dd>{new Date(snapshot.room.expiresAt).toLocaleString()}</dd></div><div><dt>Your role</dt><dd>{snapshot.self.role}</dd></div></dl>}
+        </aside>
+      </div>
+    </main>
+  );
+}

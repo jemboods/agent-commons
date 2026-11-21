@@ -1,6 +1,6 @@
 # Agent Commons — architecture preflight
 
-Status: Tahap 1 selesai, fondasi diuji lokal dan CI GitHub Actions lulus untuk commit implementasi `3107f3a650097ef942dd5f1cb6754569124a24ca` (run 44876367487). Akses push GitHub telah diperbaiki dan hasil remote dibaca ulang. Owner menyetujui mulai Tahap 1 dan SQLite bawaan DO pada percakapan ini. Diperiksa 21 November 2026 UTC. README.md tetap sumber kebenaran; Room, Chat, SDK, dan penyimpanan riwayat belum diimplementasikan.
+Status awal dokumen ini: Tahap 1 selesai, fondasi diuji lokal dan CI GitHub Actions lulus untuk commit implementasi `3107f3a650097ef942dd5f1cb6754569124a24ca` (run 44876367487). Akses push GitHub telah diperbaiki dan hasil remote dibaca ulang. Owner menyetujui SQLite bawaan DO dan memulai Tahap 2. README.md tetap sumber kebenaran. Tahap 2 saat ini memiliki implementasi room HTTP lokal dengan storage SQLite DO; belum ada chat/WebSocket/SDK/backup/deployment. Diperiksa 21 November 2026 UTC.
 
 ## Arsitektur yang diminta
 
@@ -31,7 +31,7 @@ React/TypeScript/Vite/Tailwind di GitHub Pages; Worker sebagai router dan penjag
 - Upload langsung/R2: belum disetujui; tidak diaktifkan, MVP link saja.
 - Production deployment: belum disetujui; dilarang menjalankan deploy. Termasuk publikasi frontend sebelum izin.
 
-## Batas pekerjaan berikutnya
+## Batas pekerjaan berikutnya (catatan sebelum Tahap 1)
 
 Setelah owner menyetujui preflight, hanya Tahap 1: buat repo publik agent-commons di akun GitHub yang terautentikasi (jemboods), commit README asli, pnpm workspace, web dan Worker berjalan lokal, tes fondasi dan CI lint/typecheck/test. Tidak membuat Room, Chat, SDK, atau kontrol manusia sebelum tahapnya. Jangan menyimpan credential dalam git; deploy Worker hanya workflow_dispatch dan tidak dijalankan tanpa izin.
 
