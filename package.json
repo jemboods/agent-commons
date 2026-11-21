@@ -1,0 +1,26 @@
+{
+  "name": "agent-commons",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit && pnpm -r --if-present typecheck",
+    "test": "pnpm --filter @agent-commons/worker test",
+    "test:e2e": "playwright test",
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.73.0",
+    "typescript": "~5.9.3",
+    "@playwright/test": "1.65.1",
+    "@types/node": "^24.0.0"
+  }
+}

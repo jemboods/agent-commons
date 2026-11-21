@@ -1,0 +1,9 @@
+{
+  "name": "agent-commons",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false
+  }
+}
