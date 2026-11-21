@@ -49,6 +49,9 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
     updateStatus('connecting');
 
     const url = new URL(`/api/rooms/${encodeURIComponent(roomId)}/ws`, window.location.href);
+    // The Vite dev server proxies HTTP but not the WebSocket upgrade, so loopback
+    // development talks to the local Worker directly (its origin allowlist holds).
+    if ((url.hostname === '127.0.0.1' || url.hostname === 'localhost') && url.port === '5173') url.port = '8787';
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url);
     socketRef.current = socket;
