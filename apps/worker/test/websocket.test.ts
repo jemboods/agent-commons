@@ -35,6 +35,175 @@ function stub(room: Access) {
 function join(socket: WebSocket, sessionToken: string) {
   socket.send(JSON.stringify({ v: 1, type: 'join', payload: { sessionToken } }));
 }
+async function authenticated(room: Access) {
+  const socket = await connect(room);
+  const welcome = message(socket);
+  join(socket, room.sessionToken);
+  await welcome;
+  return socket;
+}
+function outcome(socket: WebSocket): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    socket.addEventListener('message', (event) => resolve(JSON.parse(String(event.data))), { once: true });
+    socket.addEventListener('close', (event) => resolve({ closed: event.reason }), { once: true });
+  });
+}
+function chat(socket: WebSocket, payload: unknown) {
+  socket.send(JSON.stringify({ v: 1, type: 'message', payload }));
+}
+
+it('fans out a server-authored live chat event to authenticated room connections only', async () => {
+  const room = await createRoom();
+  const otherRoom = await createRoom();
+  const sender = await authenticated(room);
+  const receiver = await authenticated(room);
+  const outsider = await authenticated(otherRoom);
+  const pending = await connect(room);
+  const leaked: string[] = [];
+  outsider.addEventListener('message', (event) => leaked.push(String(event.data)));
+  pending.addEventListener('message', (event) => leaked.push(String(event.data)));
+  try {
+    const sent = outcome(sender);
+    const received = message(receiver);
+    chat(sender, { text: 'Hello, room!\n```ts\nconst x = 1;\n```' });
+    const event = await sent;
+    expect(event).toMatchObject({ v: 1, room: room.room.id, type: 'message', from: { id: room.participant.id, name: 'Owner', kind: 'human' }, payload: { text: 'Hello, room!\n```ts\nconst x = 1;\n```' } });
+    expect(event.id).toMatch(/^msg_[a-f0-9]{32}$/);
+    expect(Number.isFinite(Date.parse(String(event.ts)))).toBe(true);
+    expect(JSON.parse(await received)).toEqual(event);
+    await runInDurableObject(stub(room), async () => {});
+    expect(leaked).toEqual([]);
+    expect(JSON.stringify(event)).not.toContain(room.sessionToken);
+  } finally { [sender, receiver, outsider, pending].forEach((socket) => socket.close()); }
+});
+
+it('rechecks the current observer role before each send while retaining read access', async () => {
+  const room = await createRoom();
+  const socket = await authenticated(room);
+  try {
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      saved.participants[0].role = 'observer';
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+    const reply = outcome(socket);
+    chat(socket, { text: 'Observers cannot send' });
+    expect(await reply).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+  } finally { socket.close(); }
+});
+
+it('shares a durable send budget across participant connections', async () => {
+  const room = await createRoom();
+  const first = await authenticated(room);
+  const second = await authenticated(room);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const a = outcome(first);
+      const b = outcome(second);
+      chat(i % 2 ? second : first, { text: `Message ${i}` });
+      expect(await a).toMatchObject({ type: 'message' });
+      expect(await b).toMatchObject({ type: 'message' });
+    }
+    const limited = outcome(second);
+    chat(second, { text: 'Over budget' });
+    expect(await limited).toMatchObject({ type: 'error', payload: { code: 'RATE_LIMITED' } });
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      expect(saved.rate).toContainEqual(expect.objectContaining({ key: `chat:${room.participant.id}`, count: 5 }));
+      saved.rate = saved.rate.map((entry: { key: string; until: number }) => entry.key.startsWith('chat:') ? { ...entry, until: Date.now() - 1 } : entry);
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+    const recovered = outcome(second);
+    chat(second, { text: 'Budget recovered' });
+    expect(await recovered).toMatchObject({ type: 'message' });
+  } finally { first.close(); second.close(); }
+});
+
+it('limits agents to one message per two seconds across connections', async () => {
+  const room = await createRoom();
+  const result = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/join`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Agent', kind: 'agent', accessCode: 'socket-test-code' }),
+  });
+  expect(result.status).toBe(200);
+  const access = await result.json() as Access;
+  const socket = await authenticated(access);
+  const another = await authenticated(access);
+  try {
+    const first = outcome(socket);
+    const delivered = message(another);
+    chat(socket, { text: 'First' });
+    expect(await first).toMatchObject({ type: 'message' });
+    await delivered;
+    const second = outcome(another);
+    chat(another, { text: 'Too soon' });
+    expect(await second).toMatchObject({ type: 'error', payload: { code: 'RATE_LIMITED' } });
+  } finally { socket.close(); another.close(); }
+});
+
+it('bounds the complete server-authored event, not just the incoming text frame', async () => {
+  const room = await createRoom();
+  const socket = await authenticated(room);
+  try {
+    const reply = outcome(socket);
+    chat(socket, { text: 'a'.repeat(32650) });
+    expect(await reply).toEqual({ closed: 'INVALID_MESSAGE' });
+  } finally { socket.close(); }
+});
+
+it.each([
+  { v: 2, type: 'message', payload: { text: 'Wrong version' } },
+  { v: 1, type: 'message', room: 'r_fake', payload: { text: 'Spoofed room' } },
+  { v: 1, type: 'message', from: { id: 'p_fake' }, payload: { text: 'Spoofed sender' } },
+  { v: 1, type: 'message', ts: '2020-01-01T00:00:00Z', payload: { text: 'Spoofed timestamp' } },
+  { v: 1, type: 'message', payload: { text: ' ', mentions: ['p_fake'] } },
+  { v: 1, type: 'message', payload: { text: 42 } },
+  { v: 1, type: 'message', payload: { text: 'Instructions are not chat', intent: 'instruction' } },
+  { v: 1, type: 'message', payload: { text: '😀'.repeat(9000) } },
+])('rejects malformed authenticated chat frames %# without delivery', async (frame) => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  const receiver = await authenticated(room);
+  const received: string[] = [];
+  receiver.addEventListener('message', (event) => received.push(String(event.data)));
+  try {
+    const reply = outcome(sender);
+    sender.send(JSON.stringify(frame));
+    expect(await reply).toEqual({ closed: 'INVALID_MESSAGE' });
+    await runInDurableObject(stub(room), async () => {});
+    expect(received).toEqual([]);
+  } finally { sender.close(); receiver.close(); }
+});
+
+it.each(['expired', 'revoked'])('filters %s recipients at the outgoing fan-out boundary', async (kind) => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  const renewed = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/owner-session`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerKey: room.ownerKey }),
+  });
+  expect(renewed.status).toBe(200);
+  const access = await renewed.json() as Access;
+  const receiver = await authenticated(access);
+  const received: string[] = [];
+  receiver.addEventListener('message', (event) => received.push(String(event.data)));
+  try {
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      if (kind === 'expired') saved.sessions[1].expiresAt = Date.now() - 1;
+      else saved.sessions.splice(1, 1);
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+    const close = closed(receiver);
+    const sent = outcome(sender);
+    chat(sender, { text: 'Only authorized recipients' });
+    expect(await sent).toMatchObject({ type: 'message' });
+    expect((await close).reason).toBe('UNAUTHORIZED');
+    expect(received).toEqual([]);
+  } finally { sender.close(); receiver.close(); }
+});
 
 it.each(['https://evil.example', 'null'])('rejects explicitly disallowed Origin %s', async (origin) => {
   const room = await createRoom();

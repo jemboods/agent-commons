@@ -231,9 +231,13 @@ export class RoomDurableObject extends DurableObject<Env> {
       this.sweepSockets(room);
       const attachment = this.attachment(socket);
       if (attachment.state === 'closed') return;
-      if (attachment.state !== 'pending' || typeof message !== 'string' || new TextEncoder().encode(message).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (typeof message !== 'string' || new TextEncoder().encode(message).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       let frame: unknown;
       try { frame = JSON.parse(message); } catch { frame = null; }
+      if (attachment.state === 'authenticated') {
+        this.sendChat(socket, room, attachment, frame);
+        return;
+      }
       if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || frame.type !== 'join' || !isObject(frame.payload) || !allowedKeys(frame.payload, ['sessionToken']) || typeof frame.payload.sessionToken !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(frame.payload.sessionToken)) {
         this.closeSocket(socket, 'INVALID_MESSAGE'); return;
       }
@@ -249,6 +253,34 @@ export class RoomDurableObject extends DurableObject<Env> {
         payload: { room: publicRoom(room), self: publicParticipant(member), participants: room.participants.map(publicParticipant), liveOnly: true },
       }));
     });
+  }
+
+  private sendChat(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>, frame: unknown): void {
+    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || frame.type !== 'message' || !isObject(frame.payload) || !allowedKeys(frame.payload, ['text']) || !validString(frame.payload.text, 1, 32 * 1024)) {
+      this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+    }
+    const member = room.participants.find((entry) => entry.id === auth.participantId)!;
+    if (member.role === 'observer') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+    const now = Date.now();
+    const event = JSON.stringify({ v: 1, id: `msg_${uuid()}`, room: room.id, type: 'message',
+      from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload: { text: frame.payload.text },
+    });
+    if (new TextEncoder().encode(event).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+    this.prune(room);
+    const key = `chat:${member.id}`;
+    let budget = room.rate.find((entry) => entry.key === key);
+    if (!budget) { budget = { key, count: 0, until: now + 2000 }; room.rate.push(budget); }
+    if (budget.count >= (member.kind === 'agent' ? 1 : 5)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
+    budget.count++;
+    this.save(room);
+    this.sweepSockets(room);
+    for (const target of this.ctx.getWebSockets()) {
+      if (this.attachment(target).state === 'authenticated') target.send(event);
+    }
+  }
+
+  private socketError(socket: WebSocket, room: Room, code: string): void {
+    socket.send(JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'error', ts: iso(Date.now()), payload: { code } }));
   }
 
   private attachment(socket: WebSocket): SocketAttachment {

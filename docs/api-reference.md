@@ -1,6 +1,6 @@
 # API — Room dan awal Tahap 3 (WebSocket)
 
-Room memakai HTTP dan Durable Object SQLite-backed. Slice awal Tahap 3 menambahkan autentikasi WebSocket hibernatable dan welcome; **chat/presence belum tersedia**. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
+Room memakai HTTP dan Durable Object SQLite-backed. Tahap 3 menyediakan autentikasi WebSocket hibernatable, welcome, dan fan-out chat teks live di backend; **integrasi browser/presence belum tersedia**. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
 
 ## Perilaku umum
 
@@ -45,7 +45,7 @@ Kirim satu frame teks JSON dalam 10 detik:
 {"v":1,"type":"join","payload":{"sessionToken":"SESSION_FROM_HTTP_JOIN"}}
 ```
 
-Field tambahan, versi/tipe salah, biner, atau frame lebih dari 32 KiB UTF-8 ditutup dengan kode 1008 dan alasan `INVALID_MESSAGE`. Token tidak valid, lintas-room, kedaluwarsa, dicabut, atau join terlambat ditutup 1008 `UNAUTHORIZED`. Tidak ada kredensial atau input mentah dalam alasan penutupan. Frame lain, termasuk join kedua, belum didukung dan ditutup `INVALID_MESSAGE`.
+Field tambahan, versi/tipe salah, biner, atau frame lebih dari 32 KiB UTF-8 ditutup dengan kode 1008 dan alasan `INVALID_MESSAGE`. Token tidak valid, lintas-room, kedaluwarsa, dicabut, atau join terlambat ditutup 1008 `UNAUTHORIZED`. Tidak ada kredensial atau input mentah dalam alasan penutupan. Join kedua dan tipe yang belum diimplementasikan ditutup `INVALID_MESSAGE`.
 
 Setelah pemeriksaan session dan membership, server mengirim:
 
@@ -54,8 +54,27 @@ Setelah pemeriksaan session dan membership, server mengirim:
  payload:{room:<RoomView>, self:<Participant>, participants:[<Participant>], liveOnly:true}}
 ```
 
-Welcome tidak berisi riwayat, secrets, atau token. Roster adalah membership, **bukan** status online. Socket memakai `acceptWebSocket` dan attachment berisi identitas peserta terverifikasi serta digest session, bukan bearer token. Maksimal 16 socket belum join dan 200 socket aktif per room, selain pembatasan request HTTP yang sudah ada. Alarm DO yang sama mengurus deadline join, expiry session, dan expiry room tanpa timer yang menahan hibernasi. Leave, eviksi session, atau penghancuran room menutup socket yang aksesnya dicabut; setiap batas otorisasi membaca state terkini. Fan-out chat baru akan ditambahkan di slice berikutnya dengan pemeriksaan yang sama.
+Welcome tidak berisi riwayat, secrets, atau token. Roster adalah membership, **bukan** status online. Socket memakai `acceptWebSocket` dan attachment berisi identitas peserta terverifikasi serta digest session, bukan bearer token. Maksimal 16 socket belum join dan 200 socket aktif per room, selain pembatasan request HTTP yang sudah ada. Alarm DO yang sama mengurus deadline join, expiry session, dan expiry room tanpa timer yang menahan hibernasi. Leave, eviksi session, atau penghancuran room menutup socket yang aksesnya dicabut; setiap batas otorisasi membaca state terkini, termasuk sebelum fan-out.
+
+## Chat teks live — slice 2a Tahap 3
+
+Setelah welcome, kirim:
+
+```json
+{"v":1,"type":"message","payload":{"text":"Halo room!"}}
+```
+
+Teks wajib tidak kosong/whitespace saja. Field lain belum diterima, termasuk identitas pengirim, timestamp, room, reply, mention, atau intent. Snippet/Markdown dibawa sebagai teks inert; server tidak merender HTML atau mengambil URL. Server membuat satu event identik bagi seluruh socket terautentikasi dalam room tersebut, termasuk pengirim:
+
+```text
+{v:1, id:"msg_<32 hex>", room:"r_…", type:"message",
+ from:{id:"p_…",name:"…",kind:"human|agent"}, ts:"<ISO timestamp>", payload:{text:"…"}}
+```
+
+Batas 32 KiB UTF-8 berlaku pada frame masuk **dan event lengkap** keluaran; sisakan ruang untuk metadata server. Event terlalu besar ditolak 1008 `INVALID_MESSAGE`, bukan dipotong. Pending socket dan room lain tidak menerima event; session penerima yang expired/dicabut ditutup sebelum pengiriman.
+
+Observer tetap dapat membaca tetapi tidak mengirim, berdasarkan role terkini di server. Batas pengiriman per peserta (dibagi semua socket/session dan disimpan bersama state DO): manusia 5 pesan per window 2 detik, agent 1 pesan per window 2 detik. Window dimulai pada kiriman pertama yang valid. Penolakan izin/laju mengirim hanya ke pengirim `{v:1,id:"evt_…",room:"r_…",type:"error",ts:"…",payload:{code:"FORBIDDEN|RATE_LIMITED"}}` tanpa menutup koneksi. Tidak ada retry otomatis, penyimpanan isi pesan, atau replay saat reconnect. Reply/mention menyusul pada slice 2b.
 
 ## Batas tahap dan verifikasi
 
-Belum ada chat, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.
+Belum ada chat browser, reply/mention, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.
