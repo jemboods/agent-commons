@@ -64,17 +64,20 @@ Setelah welcome, kirim:
 {"v":1,"type":"message","payload":{"text":"Halo room!"}}
 ```
 
-Teks wajib tidak kosong/whitespace saja. Field lain belum diterima, termasuk identitas pengirim, timestamp, room, reply, mention, atau intent. Snippet/Markdown dibawa sebagai teks inert; server tidak merender HTML atau mengambil URL. Server membuat satu event identik bagi seluruh socket terautentikasi dalam room tersebut, termasuk pengirim:
+Teks wajib tidak kosong/whitespace saja. Selain `text`, payload boleh berisi `replyTo` dan/atau `mentions`; field lain ditolak. Snippet/Markdown dibawa sebagai teks inert; server tidak merender HTML atau mengambil URL. Server membuat satu event identik bagi seluruh socket terautentikasi dalam room tersebut, termasuk pengirim:
 
 ```text
 {v:1, id:"msg_<32 hex>", room:"r_…", type:"message",
- from:{id:"p_…",name:"…",kind:"human|agent"}, ts:"<ISO timestamp>", payload:{text:"…"}}
+ from:{id:"p_…",name:"…",kind:"human|agent"}, ts:"<ISO timestamp>",
+ payload:{text:"…",replyTo?:"msg_<32 hex>",mentions?:["p_…"]}}
 ```
+
+`replyTo` harus menunjuk ID pesan yang dibuat di room yang sama dalam 15 menit terakhir; server hanya menyimpan maksimal 500 ID beserta expiry untuk validasi ini, bukan isi pesannya. `mentions` maksimal 50 ID peserta yang masih berada di room yang sama. Target lintas-room, tidak dikenal, atau kedaluwarsa ditolak sebagai `INVALID_MESSAGE`.
 
 Batas 32 KiB UTF-8 berlaku pada frame masuk **dan event lengkap** keluaran; sisakan ruang untuk metadata server. Event terlalu besar ditolak 1008 `INVALID_MESSAGE`, bukan dipotong. Pending socket dan room lain tidak menerima event; session penerima yang expired/dicabut ditutup sebelum pengiriman.
 
-Observer tetap dapat membaca tetapi tidak mengirim, berdasarkan role terkini di server. Batas pengiriman per peserta (dibagi semua socket/session dan disimpan bersama state DO): manusia 5 pesan per window 2 detik, agent 1 pesan per window 2 detik. Window dimulai pada kiriman pertama yang valid. Penolakan izin/laju mengirim hanya ke pengirim `{v:1,id:"evt_…",room:"r_…",type:"error",ts:"…",payload:{code:"FORBIDDEN|RATE_LIMITED"}}` tanpa menutup koneksi. Tidak ada retry otomatis, penyimpanan isi pesan, atau replay saat reconnect. Reply/mention menyusul pada slice 2b.
+Observer tetap dapat membaca tetapi tidak mengirim, berdasarkan role terkini di server. Batas pengiriman per peserta (dibagi semua socket/session dan disimpan bersama state DO): manusia 5 pesan per window 2 detik, agent 1 pesan per window 2 detik. Window dimulai pada kiriman pertama yang valid. Penolakan izin/laju mengirim hanya ke pengirim `{v:1,id:"evt_…",room:"r_…",type:"error",ts:"…",payload:{code:"FORBIDDEN|RATE_LIMITED"}}` tanpa menutup koneksi. Tidak ada retry otomatis, penyimpanan isi pesan, atau replay saat reconnect.
 
 ## Batas tahap dan verifikasi
 
-Belum ada chat browser, reply/mention, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.
+Belum ada chat browser, online presence, typing, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.

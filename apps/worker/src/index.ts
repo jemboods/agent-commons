@@ -10,6 +10,8 @@ const SESSION_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 16 * 1024;
 const ROOM_REQUESTS_PER_MINUTE = 120;
 const MAX_SESSIONS_PER_PARTICIPANT = 5;
+const REPLY_TARGET_TTL_MS = 15 * 60 * 1000;
+const MAX_REPLY_TARGETS = 500;
 const ALLOWED_ORIGINS = new Set([
   'https://jemboods.github.io',
   'http://localhost:5173',
@@ -24,6 +26,7 @@ type Room = {
   createdAt: string; expiresAt: string; accessCodeEnabled: boolean; accessCode?: { salt: string; hash: string };
   ownerKeyHash: string; state: 'active' | 'deleted'; participants: Participant[];
   sessions: Session[]; invitations: Invitation[]; lockouts: Lockout[]; rate: { key: string; count: number; until: number }[];
+  recentMessages: { id: string; expiresAt: number }[];
 };
 type Participant = {
   id: string; name: string; kind: Kind; role: Role; joinedAt: string; canInstruct: boolean;
@@ -256,14 +259,29 @@ export class RoomDurableObject extends DurableObject<Env> {
   }
 
   private sendChat(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>, frame: unknown): void {
-    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || frame.type !== 'message' || !isObject(frame.payload) || !allowedKeys(frame.payload, ['text']) || !validString(frame.payload.text, 1, 32 * 1024)) {
+    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || frame.type !== 'message' || !isObject(frame.payload) || !allowedKeys(frame.payload, ['text', 'replyTo', 'mentions']) || !validString(frame.payload.text, 1, 32 * 1024)) {
       this.closeSocket(socket, 'INVALID_MESSAGE'); return;
     }
     const member = room.participants.find((entry) => entry.id === auth.participantId)!;
     if (member.role === 'observer') { this.socketError(socket, room, 'FORBIDDEN'); return; }
     const now = Date.now();
-    const event = JSON.stringify({ v: 1, id: `msg_${uuid()}`, room: room.id, type: 'message',
-      from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload: { text: frame.payload.text },
+    this.prune(room);
+    const replyTo = frame.payload.replyTo;
+    if (replyTo !== undefined && (typeof replyTo !== 'string' || !/^msg_[a-f0-9]{32}$/.test(replyTo) || !room.recentMessages.some((entry) => entry.id === replyTo))) {
+      this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+    }
+    const mentions = frame.payload.mentions;
+    if (mentions !== undefined && (!Array.isArray(mentions) || mentions.length > 50 || !mentions.every((id) => typeof id === 'string' && room.participants.some((participant) => participant.id === id)))) {
+      this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+    }
+    const payload = {
+      text: frame.payload.text,
+      ...(replyTo === undefined ? {} : { replyTo }),
+      ...(mentions === undefined ? {} : { mentions }),
+    };
+    const id = `msg_${uuid()}`;
+    const event = JSON.stringify({ v: 1, id, room: room.id, type: 'message',
+      from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload,
     });
     if (new TextEncoder().encode(event).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
     this.prune(room);
@@ -272,6 +290,8 @@ export class RoomDurableObject extends DurableObject<Env> {
     if (!budget) { budget = { key, count: 0, until: now + 2000 }; room.rate.push(budget); }
     if (budget.count >= (member.kind === 'agent' ? 1 : 5)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
     budget.count++;
+    room.recentMessages.push({ id, expiresAt: now + REPLY_TARGET_TTL_MS });
+    if (room.recentMessages.length > MAX_REPLY_TARGETS) room.recentMessages.splice(0, room.recentMessages.length - MAX_REPLY_TARGETS);
     this.save(room);
     this.sweepSockets(room);
     for (const target of this.ctx.getWebSockets()) {
@@ -343,7 +363,11 @@ export class RoomDurableObject extends DurableObject<Env> {
   private load(): Room | null {
     const row = this.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").toArray()[0];
     if (!row) return null;
-    try { return JSON.parse(row.value) as Room; } catch { return null; }
+    try {
+      const room = JSON.parse(row.value) as Room;
+      room.recentMessages ??= [];
+      return room;
+    } catch { return null; }
   }
   private save(room: Room): void {
     this.sql.exec('INSERT INTO room_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'room', JSON.stringify(room));
@@ -356,6 +380,7 @@ export class RoomDurableObject extends DurableObject<Env> {
   }
   private prune(room: Room): void {
     const now = Date.now();
+    room.recentMessages = (room.recentMessages ?? []).filter((entry) => entry.expiresAt > now).slice(-MAX_REPLY_TARGETS);
     room.sessions = room.sessions.filter((session) => session.expiresAt > now && room.participants.some((p) => p.id === session.participantId));
     room.invitations = room.invitations.filter((invite) => invite.expiresAt > now && invite.uses < invite.maxUses);
     room.lockouts = room.lockouts.filter((lock) => lock.until > now || lock.failures < 5);
@@ -376,7 +401,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       id: String(data.id), name: String(data.name), description: typeof data.description === 'string' ? data.description : '',
       mode: data.mode as Mode, maxParticipants: Number(data.maxParticipants), createdAt: iso(now), expiresAt: iso(expiresAt),
       accessCodeEnabled: true, accessCode: { salt: b64(salt), hash: await hashCode(data.accessCode, salt) },
-      ownerKeyHash: await digest(ownerKey), state: 'active', participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [],
+      ownerKeyHash: await digest(ownerKey), state: 'active', participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [], recentMessages: [],
     };
     const sessionToken = await this.createSession(room, participant);
     this.save(room);

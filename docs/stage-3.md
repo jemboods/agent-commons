@@ -31,6 +31,14 @@ Commit `e9bf9170e1c64f23eddff08b05a1aa1b2cd72a63`: [CI 44930120673 lulus](https:
 - `pnpm --filter @agent-commons/worker exec vitest run test/websocket.test.ts test/rooms.test.ts`: **49 tes lulus**, 2 file, 7,25 detik. Worker typecheck, ESLint kedua file Worker yang diubah, dan `git diff --check` lulus. Peringatan proxy/pool Cloudflare lama tetap ada; tanpa dependency/teknologi baru.
 - Full suite, Playwright/e2e dan deploy tidak dijalankan di box. CI checkpoint baru belum dinyatakan lulus; periksa hasil remote setelah push.
 
+## Slice 2b — reply dan mention
+
+- Payload chat menerima `replyTo` dan `mentions` dengan validasi ketat. Reply harus merujuk ID pesan dari room yang sama yang masih aktif; metadata berisi ID + expiry, maksimum 500 entri dan TTL 15 menit—tidak menyimpan teks. Mention dibatasi 50 target peserta dalam room yang sama.
+- Event server meneruskan metadata reply/mention setelah validasi. Target lintas-room, tidak dikenal, atau kedaluwarsa ditolak; field server-authored tetap tidak dapat dipalsukan.
+- RED terlihat sebelum implementasi: kasus reply/mention sah ditutup `INVALID_MESSAGE` karena backend hanya menerima `text`; empat tes baru mencakup payload valid, reply lintas-room, mention lintas-room, serta expiry dan ketiadaan isi pesan pada metadata.
+- Tes fokus awal: `pnpm --filter @agent-commons/worker exec vitest run test/websocket.test.ts -t 'same-room reply|reply target from another room|mention target that is not'` — **3 lulus**. Verifikasi regresi final lokal: `pnpm --filter @agent-commons/worker exec vitest run test/websocket.test.ts test/rooms.test.ts` — **53 lulus**, 2 file; Worker typecheck, ESLint pada dua file Worker, dan `git diff --check` lulus.
+- Tidak menjalankan Playwright/e2e, `pnpm check` penuh, atau deploy. CI penuh untuk checkpoint slice ini menunggu hasil GitHub Actions setelah push.
+
 ## Lanjut
 
-Periksa CI checkpoint slice 2a; perbaiki bila gagal dan tunggu tick berikutnya jika masih berjalan. Setelah hijau, lanjut slice 2b: target reply dan mention satu room dengan metadata reply bounded/short-lived, tanpa menyimpan isi percakapan sebelum Tahap 6. Selanjutnya slice 3 presence/typing/browser dan slice 4 acceptance di CI. Tahap 3 baru selesai setelah seluruh acceptance termasuk browser-ke-backend lulus dan commit/link CI final dicatat.
+Periksa CI checkpoint slice 2b; perbaiki bila gagal dan tunggu tick berikutnya jika masih berjalan. Jika hijau, lanjut slice 3 presence/typing/browser dan slice 4 acceptance di CI. Tahap 3 baru selesai setelah seluruh acceptance termasuk browser-ke-backend lulus dan commit/link CI final dicatat.

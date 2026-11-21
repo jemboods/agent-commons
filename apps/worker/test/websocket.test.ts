@@ -77,6 +77,82 @@ it('fans out a server-authored live chat event to authenticated room connections
   } finally { [sender, receiver, outsider, pending].forEach((socket) => socket.close()); }
 });
 
+it('accepts same-room reply and mention references and emits them in the server event', async () => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  const joined = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/join`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Reply author', kind: 'human', accessCode: 'socket-test-code' }),
+  });
+  expect(joined.status).toBe(200);
+  const member = await joined.json() as Access;
+  const replier = await authenticated(member);
+  try {
+    const first = outcome(sender);
+    const delivered = message(replier);
+    chat(sender, { text: 'Root message' });
+    const root = await first;
+    expect(JSON.parse(await delivered)).toEqual(root);
+
+    const replyResult = outcome(replier);
+    const replyDelivery = message(sender);
+    chat(replier, { text: 'A reply', replyTo: root.id, mentions: [room.participant.id] });
+    const reply = await replyResult;
+    expect(reply).toMatchObject({ type: 'message', payload: {
+      text: 'A reply', replyTo: root.id, mentions: [room.participant.id],
+    } });
+    expect(JSON.parse(await replyDelivery)).toEqual(reply);
+  } finally { sender.close(); replier.close(); }
+});
+
+it('rejects a reply target from another room', async () => {
+  const room = await createRoom();
+  const otherRoom = await createRoom();
+  const foreignSender = await authenticated(otherRoom);
+  const foreignMessage = outcome(foreignSender);
+  chat(foreignSender, { text: 'Other room message' });
+  const foreignId = (await foreignMessage).id;
+  const sender = await authenticated(room);
+  try {
+    const rejected = outcome(sender);
+    chat(sender, { text: 'Cross-room reply', replyTo: foreignId });
+    expect(await rejected).toEqual({ closed: 'INVALID_MESSAGE' });
+  } finally { sender.close(); foreignSender.close(); }
+});
+
+it('expires reply targets and persists only bounded ID metadata, not chat text', async () => {
+  const room = await createRoom();
+  const sender = await authenticated(room);
+  try {
+    const created = outcome(sender);
+    chat(sender, { text: 'This content must not be retained' });
+    const root = await created;
+    await runInDurableObject(stub(room), async (_instance, state) => {
+      const row = state.storage.sql.exec<{ value: string }>("SELECT value FROM room_state WHERE key='room'").one();
+      const saved = JSON.parse(row.value);
+      expect(saved.recentMessages).toEqual([expect.objectContaining({ id: root.id })]);
+      expect(JSON.stringify(saved.recentMessages)).not.toContain('This content must not be retained');
+      saved.recentMessages[0].expiresAt = Date.now() - 1;
+      state.storage.sql.exec("UPDATE room_state SET value=? WHERE key='room'", JSON.stringify(saved));
+    });
+
+    const rejected = outcome(sender);
+    chat(sender, { text: 'Late reply', replyTo: root.id });
+    expect(await rejected).toEqual({ closed: 'INVALID_MESSAGE' });
+  } finally { sender.close(); }
+});
+
+it('rejects a mention target that is not a participant in this room', async () => {
+  const room = await createRoom();
+  const otherRoom = await createRoom();
+  const sender = await authenticated(room);
+  try {
+    const rejected = outcome(sender);
+    chat(sender, { text: 'Cross-room mention', mentions: [otherRoom.participant.id] });
+    expect(await rejected).toEqual({ closed: 'INVALID_MESSAGE' });
+  } finally { sender.close(); }
+});
+
 it('rechecks the current observer role before each send while retaining read access', async () => {
   const room = await createRoom();
   const socket = await authenticated(room);

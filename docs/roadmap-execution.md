@@ -3,7 +3,7 @@
 The owner authorized implementation of all remaining MVP stages and asked for automatic recovery after restarts. This replaces the per-stage approval requirement for the agreed MVP only. Work in order and file a report after each stage; advance after its acceptance tests pass, without another routine approval.
 
 - Done: 1 Foundation, 2 Room (`9290176`, CI run `44890145439`).
-- Active: 3 Chat. See `docs/stage-3-contract.md` and checkpoint `docs/stage-3.md`. Slice 1 verified in CI (`e9bf917`, run `44930120673`). Slice 2a implements authorized live text fan-out and durable participant send limits; verify its pushed CI before slice 2b (bounded same-room reply metadata and mention validation).
+- Active: 3 Chat. See `docs/stage-3-contract.md` and checkpoint `docs/stage-3.md`. Slice 1 verified in CI (`e9bf917`, run `44930120673`). Slice 2a implements authorized live text fan-out and durable participant send limits; CI run `44932122039` is green. Slice 2b implements bounded same-room reply metadata and mention validation; focused local regression tests pass, and its full CI will run after the checkpoint is pushed.
 - Next: 4 Human controls; 5 Agent integration; 6 Temporary storage and manual export; 7 Final review and release preparation.
 - Still separately gated: production deployment (Worker **and** Pages), GitHub backup, direct media/R2 upload, paid services/billing and additions outside the agreed stack. SQLite in the room Durable Object was already approved. Do not treat optional features or deployment as part of this authorization. No automatic backups.
 
