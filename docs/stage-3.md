@@ -39,6 +39,15 @@ Commit `e9bf9170e1c64f23eddff08b05a1aa1b2cd72a63`: [CI 44930120673 lulus](https:
 - Tes fokus awal: `pnpm --filter @agent-commons/worker exec vitest run test/websocket.test.ts -t 'same-room reply|reply target from another room|mention target that is not'` — **3 lulus**. Verifikasi regresi final lokal: `pnpm --filter @agent-commons/worker exec vitest run test/websocket.test.ts test/rooms.test.ts` — **53 lulus**, 2 file; Worker typecheck, ESLint pada dua file Worker, dan `git diff --check` lulus.
 - Tidak menjalankan Playwright/e2e, `pnpm check` penuh, atau deploy. CI penuh untuk checkpoint slice ini menunggu hasil GitHub Actions setelah push.
 
+## Slice 3a — presence dan typing backend
+
+- Presence dihitung dari koneksi live per peserta: `welcome` membawa `online` per peserta, event `presence` disiarkan hanya saat koneksi pertama dibuka dan koneksi terakhir ditutup. Multi-koneksi peserta sama dihitung satu kehadiran; pengirim tidak menerima presence miliknya.
+- Typing efemeral `{v:1,type:"typing",payload:{}}` disiarkan ke socket terautentikasi lain dengan `from` server-authored, dibatasi satu frame per peserta per 2 detik (budget bersama semua socket/session). Observer diabaikan tanpa menutup koneksi; payload berisi field tambahan ditutup `INVALID_MESSAGE`. Tidak ada teks atau status typing yang disimpan.
+- RED→GREEN nyata: tes presence gagal karena `online` belum ada di welcome dan tidak ada event presence; tes typing gagal karena frame typing ditutup `INVALID_MESSAGE` sebelum implementasi. Setelah implementasi, seluruh 4 tes baru hijau.
+- Verifikasi lokal: `pnpm --filter @agent-commons/worker test` — **60 tes lulus**, 3 file, 9,44 detik; `pnpm --filter @agent-commons/worker typecheck`, ESLint pada dua file Worker yang berubah, dan `git diff --check` lulus. Peringatan proxy/pool Cloudflare lama tetap ada; tanpa dependency/teknologi baru.
+- Commit `47a3e0115bf63ea6dafd0f830abc3caebc297c60`: [CI 44946549954 lulus](https://github.com/jemboods/agent-commons/actions/runs/44946549954).
+
 ## Lanjut
 
-Periksa CI checkpoint slice 2b; perbaiki bila gagal dan tunggu tick berikutnya jika masih berjalan. Jika hijau, lanjut slice 3 presence/typing/browser dan slice 4 acceptance di CI. Tahap 3 baru selesai setelah seluruh acceptance termasuk browser-ke-backend lulus dan commit/link CI final dicatat.
+- Slice 1, 2a, 2b, dan 3a backend sudah di-commit dengan CI hijau. Sisa Tahap 3: integrasi chat di browser (koneksi + rejoin memakai session in-memory, timeline live, presence, kirim/reply/mention lewat ID peserta, kode sebagai teks, status koneksi/error jelas) dan slice 4 acceptance browser-ke-backend di GitHub Actions beserta dokumentasi wire shape final.
+- Integrasi browser sengaja belum dimulai: menunggu keputusan owner setelah slice backend ini dilaporkan. Jangan menandai Tahap 3 selesai sebelum acceptance browser lulus di CI dan commit/link final dicatat.
