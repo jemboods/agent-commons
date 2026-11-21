@@ -31,7 +31,7 @@ function errorMessage(error: unknown): string {
   if (error.code === 'ROOM_EXPIRED') return 'This room has expired.';
   if (error.code === 'FORBIDDEN') return 'This action is not allowed for your membership.';
   if (error.code === 'RATE_LIMITED') return 'Too many failed credentials. Try again later.';
-  if (error.code === 'UNAUTHORIZED' || error.code.includes('INVALID') || error.code.includes('EXPIRED')) {
+  if (error.code === 'UNAUTHORIZED' || error.code === 'NOT_FOUND' || error.code.includes('INVALID') || error.code.includes('EXPIRED')) {
     return 'The room ID or credential is invalid or expired.';
   }
   if (error.code.includes('PRIVATE')) return 'This room only accepts invited participants.';
