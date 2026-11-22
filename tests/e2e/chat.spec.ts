@@ -5,7 +5,8 @@ async function createRoom(page: Page, name: string) {
   await expect(page.getByRole('status')).toHaveText('Local Worker connected');
   await page.getByLabel('Room name').fill(name);
   await page.getByLabel('Owner name').fill('Rina');
-  await page.getByLabel('Access code (at least 12 characters)').fill('room-chat-code-2026');
+  await page.getByRole('button', { name: 'Custom' }).click();
+  await page.getByLabel('Access code (8 characters)').fill('room-chat-code-2026');
   await page.getByRole('button', { name: 'Create room' }).click();
   await expect(page.getByRole('heading', { name })).toBeVisible();
   await expect(page.getByText('Live chat connected')).toBeVisible();

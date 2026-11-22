@@ -5,7 +5,8 @@ async function createRoom(page: import('@playwright/test').Page, name: string) {
   await expect(page.getByRole('status')).toHaveText('Local Worker connected');
   await page.getByLabel('Room name').fill(name);
   await page.getByLabel('Owner name').fill('Rina');
-  await page.getByLabel('Access code (at least 12 characters)').fill('room-access-code-2026');
+  await page.getByRole('button', { name: 'Custom' }).click();
+  await page.getByLabel('Access code (8 characters)').fill('room-access-code-2026');
   await page.getByRole('button', { name: 'Create room' }).click();
   await expect(page.getByRole('heading', { name })).toBeVisible();
   return page.getByText(/^Room ID: r_[a-f0-9]{32}$/).innerText().then((text) => text.replace('Room ID: ', ''));
