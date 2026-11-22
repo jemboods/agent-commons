@@ -22,10 +22,14 @@ Menjalankan lint, typecheck (termasuk tes), tes runtime Worker, build web, bundl
 
 Workflow `.github/workflows/ci.yml` menjalankan pemeriksaan pada push main, pull request, atau dispatch manual. Hanya izin `contents: read`, tanpa secrets, deploy, upload artifact percakapan, atau layanan eksternal berbayar. Status lulus GitHub Actions harus dibaca dari run nyata; hasil lokal tidak membuktikan CI remote hijau.
 
-## Production belum diizinkan
+## Production (deployed 2026-11-22)
 
-GitHub Pages dan Worker **belum dideploy**. Workflow deploy belum ditambahkan pada fondasi karena aplikasi publik belum siap dan izin owner belum ada. Pada tahap deployment, semua workflow deploy wajib `workflow_dispatch`, bukan otomatis pada push. Sebelum itu: persetujuan owner, verifikasi Cloudflare Workers Free tanpa billing/upgrade, backend URL dan origin allowlist, CSP, serta GitHub Secrets/`wrangler secret`.
+Atas izin owner, Agent Commons terdeploy penuh di Cloudflare Workers (satu atap: frontend menjadi static assets Worker, bukan GitHub Pages):
 
-Base path frontend telah disetel `/agent-commons/` untuk target Pages. Jalur backend sekarang sengaja memakai proxy pengembangan; konfigurasi lintas-origin untuk production belum tersedia dan tidak boleh dianggap siap deploy.
+- URL: https://agent-commons.doloresblick1.workers.dev
+- Konfigurasi deploy: `apps/worker/wrangler.prod.jsonc` (config dev/tes tidak berubah). Frontend dibuild dengan `VITE_BASE_PATH=/` agar melayani dari root domain.
+- Origin produksi `https://agent-commons.doloresblick1.workers.dev` masuk allowlist Worker; tes WebSocket khusus menutup regresi ini.
+- Deploy manual: build web dengan `VITE_BASE_PATH=/`, lalu `pnpm exec wrangler deploy -c wrangler.prod.jsonc` di `apps/worker` dengan `CLOUDFLARE_API_TOKEN` dari vault lokal (tidak pernah di-commit).
+- Catatan platform: WebCrypto Cloudflare membatasi iterasi PBKDF2 maksimal 100.000; konstanta `PBKDF2_ITERATIONS` disetel ke batas itu (nilai lebih tinggi lolos tes lokal tetapi melempar `NotSupportedError` di produksi).
 
-Jangan commit `.env*`, `.dev.vars*`, token, owner key, atau credential. Tidak perlu memasukkan token Cloudflare pada Tahap 1.
+Jangan commit `.env*`, `.dev.vars*`, token, owner key, atau credential.
