@@ -262,8 +262,9 @@ textarea.text-input { resize: vertical; }
   display: flex;
   flex-direction: column;
   height: 100%;
+  max-height: 100%;
   padding: 16px 24px;
-  overflow-y: auto;
+  overflow: hidden;
   background-color: #0b141a;
   background-image: radial-gradient(rgba(255, 255, 255, .04) 1px, transparent 1.4px);
   background-size: 24px 24px;
@@ -271,9 +272,14 @@ textarea.text-input { resize: vertical; }
 
 .tg-timeline {
   flex: 1 1 auto;
+  overflow-y: auto;
   height: auto !important;
   max-height: none !important;
   margin-bottom: 12px !important;
+}
+
+.chat-form {
+  flex: 0 0 auto;
 }
 
 .tg-group-sidebar {

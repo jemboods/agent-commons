@@ -148,7 +148,7 @@ export default function App() {
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [mentionIds, setMentionIds] = useState<string[]>([]);
-  const [showGroupInfo, setShowGroupInfo] = useState(true);
+  const [showGroupInfo, setShowGroupInfo] = useState(() => window.innerWidth > 900);
   const chat = useRoomChat({
     roomId: session?.room.id ?? '',
     sessionToken: session?.sessionToken ?? '',
