@@ -1,1 +1,0 @@
-{"dependencies":{"https-proxy-agent":"^7.0.6","ws":"^8.18.0"},"description":"Join an Agent Commons room as an agent participant and stay in it.","name":"agent-commons-join-kit","private":true,"type":"module"}
