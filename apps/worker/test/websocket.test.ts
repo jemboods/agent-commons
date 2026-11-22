@@ -900,3 +900,102 @@ it('delivers an owner broadcast to everyone while the room is paused', async () 
       payload: { text: 'Pengumuman: room di-pause dulu', broadcast: true } });
   } finally { owner.close(); guestSocket.close(); }
 });
+
+it('pins and unpins a live message with server-verified attribution', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Pin guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const sent = matchingMessage(owner, (event) => event.type === 'message');
+    chat(guestSocket, { text: 'Pin kalimat ini' });
+    const messageId = (await sent).id as string;
+
+    const guestDenied = outcome(guestSocket);
+    control(guestSocket, { action: 'pin', messageId, text: 'Pin kalimat ini' });
+    expect(await guestDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const pinned = matchingMessage(guestSocket, (event) => event.type === 'state');
+    const ownerPinned = matchingMessage(owner, (event) => event.type === 'state');
+    control(owner, { action: 'pin', messageId, text: 'Pin kalimat ini' });
+    const state = await pinned;
+    await ownerPinned;
+    const pins = (state.payload as Record<string, unknown>).pins as Record<string, unknown>[];
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatchObject({ messageId, text: 'Pin kalimat ini', pinnedBy: room.participant.id });
+    expect(pins[0].from).toMatchObject({ id: guest.participant.id, name: 'Pin guest', kind: 'human' });
+
+    const duplicate = outcome(owner);
+    control(owner, { action: 'pin', messageId, text: 'Pin kalimat ini' });
+    expect(await duplicate).toMatchObject({ type: 'error', payload: { code: 'INVALID_MESSAGE' } });
+
+    const unpinned = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'unpin', messageId });
+    expect(((await unpinned).payload as Record<string, unknown>).pins).toEqual([]);
+
+    const view = await roomSnapshot(room);
+    expect(view.room.pins).toEqual([]);
+  } finally { owner.close(); guestSocket.close(); }
+});
+
+it('rejects pinning an unknown message and closes on a malformed message id', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const moderator = await joinGuest(room, 'Pin mod');
+  const promoted = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/participants/${moderator.participant.id}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${room.sessionToken}` },
+    body: JSON.stringify({ role: 'moderator' }),
+  });
+  expect(promoted.status).toBe(200);
+  const moderatorSocket = await authenticated(moderator);
+  try {
+    const unknown = outcome(owner);
+    control(owner, { action: 'pin', messageId: `msg_${'0'.repeat(32)}`, text: 'Tidak ada' });
+    expect(await unknown).toMatchObject({ type: 'error', payload: { code: 'INVALID_MESSAGE' } });
+
+    const closing = closed(moderatorSocket);
+    control(moderatorSocket, { action: 'pin', messageId: 'bukan-id', text: 'Rusak' });
+    expect((await closing).reason).toBe('INVALID_MESSAGE');
+  } finally { owner.close(); moderatorSocket.close(); }
+});
+
+it('caps the pin list at ten messages', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guestA = await joinGuest(room, 'Cap guest A');
+  const guestB = await joinGuest(room, 'Cap guest B');
+  const socketA = await authenticated(guestA);
+  const socketB = await authenticated(guestB);
+  const seen: Record<string, unknown>[] = [];
+  owner.addEventListener('message', (event) => {
+    const parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+    if (parsed.type === 'message') seen.push(parsed);
+  });
+  try {
+    for (let index = 1; index <= 5; index++) {
+      chat(socketA, { text: `Pesan A${index}` });
+      chat(socketB, { text: `Pesan B${index}` });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(seen).toHaveLength(10);
+
+    for (let index = 0; index < 10; index++) {
+      const messageId = seen[index].id as string;
+      const text = (seen[index].payload as Record<string, unknown>).text as string;
+      const pinned = matchingMessage(owner, (event) => event.type === 'state' &&
+        ((event.payload as Record<string, unknown>).pins as unknown[]).length === index + 1);
+      control(owner, { action: 'pin', messageId, text });
+      await pinned;
+    }
+
+    const extra = matchingMessage(owner, (event) => event.type === 'message');
+    chat(owner, { text: 'Pesan kesebelas' });
+    const extraId = (await extra).id as string;
+    const overflow = outcome(owner);
+    control(owner, { action: 'pin', messageId: extraId, text: 'Pesan kesebelas' });
+    expect(await overflow).toMatchObject({ type: 'error', payload: { code: 'INVALID_MESSAGE' } });
+
+    const view = await roomSnapshot(room);
+    expect(view.room.pins as unknown[]).toHaveLength(10);
+  } finally { owner.close(); socketA.close(); socketB.close(); }
+});

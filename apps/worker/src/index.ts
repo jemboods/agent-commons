@@ -12,6 +12,8 @@ const ROOM_REQUESTS_PER_MINUTE = 120;
 const MAX_SESSIONS_PER_PARTICIPANT = 5;
 const REPLY_TARGET_TTL_MS = 15 * 60 * 1000;
 const MAX_REPLY_TARGETS = 500;
+const MAX_PINS = 10;
+const MAX_PIN_TEXT_CHARS = 2_000;
 const TYPING_WINDOW_MS = 2_000;
 const ALLOWED_ORIGINS = new Set([
   'https://jemboods.github.io',
@@ -25,12 +27,13 @@ type Role = 'owner' | 'moderator' | 'human' | 'agent' | 'observer';
 type ChatState = 'active' | 'paused' | 'interrupted';
 type InterruptMode = 'soft' | 'hard';
 type Interrupt = { id: string; mode: InterruptMode; by: string; ts: string; acks: string[] };
+type Pin = { messageId: string; text: string; from: { id: string; name: string; kind: Kind }; pinnedBy: string; ts: string };
 type Room = {
   id: string; name: string; description: string; mode: Mode; maxParticipants: number;
   createdAt: string; expiresAt: string; accessCodeEnabled: boolean; accessCode?: { salt: string; hash: string };
-  ownerKeyHash: string; state: 'active' | 'deleted'; chatState: ChatState; interrupt: Interrupt | null; participants: Participant[];
+  ownerKeyHash: string; state: 'active' | 'deleted'; chatState: ChatState; interrupt: Interrupt | null; pins: Pin[]; participants: Participant[];
   sessions: Session[]; invitations: Invitation[]; lockouts: Lockout[]; rate: { key: string; count: number; until: number }[];
-  recentMessages: { id: string; expiresAt: number }[];
+  recentMessages: { id: string; from: { id: string; name: string; kind: Kind }; expiresAt: number }[];
 };
 type Participant = {
   id: string; name: string; kind: Kind; role: Role; joinedAt: string; canInstruct: boolean; muted: boolean;
@@ -79,7 +82,7 @@ function publicRoom(room: Room) {
   return {
     id: room.id, name: room.name, description: room.description, mode: room.mode,
     maxParticipants: room.maxParticipants, createdAt: room.createdAt, expiresAt: room.expiresAt,
-    accessCodeEnabled: room.accessCodeEnabled, chatState: room.chatState, interrupt: room.interrupt,
+    accessCodeEnabled: room.accessCodeEnabled, chatState: room.chatState, interrupt: room.interrupt, pins: room.pins,
   };
 }
 function publicParticipant(participant: Participant) { return { ...participant }; }
@@ -325,7 +328,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload,
     });
     if (new TextEncoder().encode(event).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
-    room.recentMessages.push({ id, expiresAt: now + REPLY_TARGET_TTL_MS });
+    room.recentMessages.push({ id, from: { id: member.id, name: member.name, kind: member.kind }, expiresAt: now + REPLY_TARGET_TTL_MS });
     if (room.recentMessages.length > MAX_REPLY_TARGETS) room.recentMessages.splice(0, room.recentMessages.length - MAX_REPLY_TARGETS);
     this.save(room);
     this.sweepSockets(room);
@@ -358,14 +361,14 @@ export class RoomDurableObject extends DurableObject<Env> {
 
   // Room controls are re-authorized against the sender's current role on every frame.
   private sendControl(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>, frame: unknown): void {
-    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || !allowedKeys(frame.payload, ['action', 'participantId', 'mode', 'text'])) {
+    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || !allowedKeys(frame.payload, ['action', 'participantId', 'mode', 'text', 'messageId'])) {
       this.closeSocket(socket, 'INVALID_MESSAGE'); return;
     }
     const actor = room.participants.find((entry) => entry.id === auth.participantId);
     if (!actor) return;
     const action = frame.payload.action;
     if (action === 'pause' || action === 'resume') {
-      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined || frame.payload.text !== undefined || frame.payload.messageId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
       if (action === 'pause') {
         if (room.chatState === 'paused') return;
@@ -380,7 +383,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'mute' || action === 'unmute') {
-      if (frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.mode !== undefined || frame.payload.text !== undefined || frame.payload.messageId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       const targetId = frame.payload.participantId;
       if (typeof targetId !== 'string' || !/^p_[a-f0-9]{32}$/.test(targetId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner' && actor.role !== 'moderator') { this.socketError(socket, room, 'FORBIDDEN'); return; }
@@ -397,7 +400,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'interrupt') {
-      if (frame.payload.participantId !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.participantId !== undefined || frame.payload.text !== undefined || frame.payload.messageId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       const mode = frame.payload.mode;
       if (mode !== 'soft' && mode !== 'hard') { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
@@ -409,7 +412,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'remove') {
-      if (frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.mode !== undefined || frame.payload.text !== undefined || frame.payload.messageId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       const targetId = frame.payload.participantId;
       if (typeof targetId !== 'string' || !/^p_[a-f0-9]{32}$/.test(targetId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
@@ -423,13 +426,38 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'broadcast') {
-      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined || frame.payload.messageId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (!validString(frame.payload.text, 1, 32 * 1024)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
       const now = Date.now();
       this.prune(room);
       if (!this.consumeChatBudget(room, actor, now)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
       this.publishChatMessage(socket, room, actor, now, { text: frame.payload.text, broadcast: true });
+      return;
+    }
+    if (action === 'pin' || action === 'unpin') {
+      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      const messageId = frame.payload.messageId;
+      if (typeof messageId !== 'string' || !/^msg_[a-f0-9]{32}$/.test(messageId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (actor.role !== 'owner' && actor.role !== 'moderator') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      if (action === 'pin') {
+        if (typeof frame.payload.text !== 'string' || !validString(frame.payload.text, 1, MAX_PIN_TEXT_CHARS)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+        this.prune(room);
+        const entry = room.recentMessages.find((item) => item.id === messageId);
+        if (!entry || !entry.from.id) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+        if (room.pins.some((pin) => pin.messageId === messageId)) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+        if (room.pins.length >= MAX_PINS) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+        room.pins.push({ messageId, text: frame.payload.text, from: entry.from, pinnedBy: actor.id, ts: iso(Date.now()) });
+      } else {
+        if (frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+        const pin = room.pins.find((item) => item.messageId === messageId);
+        if (!pin) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+        const pinner = room.participants.find((item) => item.id === pin.pinnedBy);
+        if (actor.role === 'moderator' && pin.pinnedBy !== actor.id && pinner?.role === 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+        room.pins = room.pins.filter((item) => item.messageId !== messageId);
+      }
+      this.save(room);
+      this.broadcastState(room);
       return;
     }
     this.closeSocket(socket, 'INVALID_MESSAGE');
@@ -463,7 +491,7 @@ export class RoomDurableObject extends DurableObject<Env> {
 
   private broadcastState(room: Room): void {
     const event = JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'state', ts: iso(Date.now()),
-      payload: { chatState: room.chatState, muted: room.participants.filter((entry) => entry.muted).map((entry) => entry.id) },
+      payload: { chatState: room.chatState, muted: room.participants.filter((entry) => entry.muted).map((entry) => entry.id), pins: room.pins },
     });
     this.sweepSockets(room);
     for (const target of this.ctx.getWebSockets()) {
@@ -569,6 +597,8 @@ export class RoomDurableObject extends DurableObject<Env> {
       room.recentMessages ??= [];
       room.chatState ??= 'active';
       room.interrupt ??= null;
+      room.pins ??= [];
+      for (const entry of room.recentMessages) entry.from ??= { id: '', name: '', kind: 'human' };
       for (const participant of room.participants) participant.muted ??= false;
       return room;
     } catch { return null; }
@@ -605,7 +635,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       id: String(data.id), name: String(data.name), description: typeof data.description === 'string' ? data.description : '',
       mode: data.mode as Mode, maxParticipants: Number(data.maxParticipants), createdAt: iso(now), expiresAt: iso(expiresAt),
       accessCodeEnabled: true, accessCode: { salt: b64(salt), hash: await hashCode(data.accessCode, salt) },
-      ownerKeyHash: await digest(ownerKey), state: 'active', chatState: 'active', interrupt: null, participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [], recentMessages: [],
+      ownerKeyHash: await digest(ownerKey), state: 'active', chatState: 'active', interrupt: null, pins: [], participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [], recentMessages: [],
     };
     const sessionToken = await this.createSession(room, participant);
     this.save(room);
