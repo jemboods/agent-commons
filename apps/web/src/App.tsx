@@ -605,7 +605,7 @@ export default function App() {
                   <div className="chat-title">
                     <span className="room-avatar" aria-hidden="true">{senderInitials(snapshot.room.name)}</span>
                     <div>
-                      <h2 id="chat-heading">{snapshot.room.name}</h2>
+                      <p className="chat-room-name" id="chat-heading">{snapshot.room.name}</p>
                       <p className="chat-subline">Live only · no history</p>
                     </div>
                   </div>
