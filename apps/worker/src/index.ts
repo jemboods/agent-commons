@@ -22,15 +22,16 @@ const ALLOWED_ORIGINS = new Set([
 type Mode = 'public' | 'private' | 'hybrid';
 type Kind = 'human' | 'agent';
 type Role = 'owner' | 'moderator' | 'human' | 'agent' | 'observer';
+type ChatState = 'active' | 'paused' | 'interrupted';
 type Room = {
   id: string; name: string; description: string; mode: Mode; maxParticipants: number;
   createdAt: string; expiresAt: string; accessCodeEnabled: boolean; accessCode?: { salt: string; hash: string };
-  ownerKeyHash: string; state: 'active' | 'deleted'; participants: Participant[];
+  ownerKeyHash: string; state: 'active' | 'deleted'; chatState: ChatState; participants: Participant[];
   sessions: Session[]; invitations: Invitation[]; lockouts: Lockout[]; rate: { key: string; count: number; until: number }[];
   recentMessages: { id: string; expiresAt: number }[];
 };
 type Participant = {
-  id: string; name: string; kind: Kind; role: Role; joinedAt: string; canInstruct: boolean;
+  id: string; name: string; kind: Kind; role: Role; joinedAt: string; canInstruct: boolean; muted: boolean;
 };
 type Session = { digest: string; participantId: string; expiresAt: number };
 type Invitation = { digest: string; role: Exclude<Role, 'owner' | 'moderator'>; name?: string; maxUses: number; uses: number; expiresAt: number };
@@ -76,7 +77,7 @@ function publicRoom(room: Room) {
   return {
     id: room.id, name: room.name, description: room.description, mode: room.mode,
     maxParticipants: room.maxParticipants, createdAt: room.createdAt, expiresAt: room.expiresAt,
-    accessCodeEnabled: room.accessCodeEnabled,
+    accessCodeEnabled: room.accessCodeEnabled, chatState: room.chatState,
   };
 }
 function publicParticipant(participant: Participant) { return { ...participant }; }
@@ -239,6 +240,10 @@ export class RoomDurableObject extends DurableObject<Env> {
       let frame: unknown;
       try { frame = JSON.parse(message); } catch { frame = null; }
       if (attachment.state === 'authenticated') {
+        if (isObject(frame) && frame.type === 'control') {
+          this.sendControl(socket, room, attachment, frame);
+          return;
+        }
         if (isObject(frame) && frame.type === 'typing') {
           if (!allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || Object.keys(frame.payload).length) {
             this.closeSocket(socket, 'INVALID_MESSAGE'); return;
@@ -275,6 +280,8 @@ export class RoomDurableObject extends DurableObject<Env> {
     }
     const member = room.participants.find((entry) => entry.id === auth.participantId)!;
     if (member.role === 'observer') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+    if (member.muted) { this.socketError(socket, room, 'MUTED'); return; }
+    if (room.chatState === 'paused' && member.role !== 'owner' && member.role !== 'moderator') { this.socketError(socket, room, 'ROOM_PAUSED'); return; }
     const now = Date.now();
     this.prune(room);
     const replyTo = frame.payload.replyTo;
@@ -313,7 +320,8 @@ export class RoomDurableObject extends DurableObject<Env> {
   // Ephemeral typing carries no content and is never persisted; one frame per window per participant.
   private sendTyping(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>): void {
     const member = room.participants.find((entry) => entry.id === auth.participantId);
-    if (!member || member.role === 'observer') return;
+    if (!member || member.role === 'observer' || member.muted) return;
+    if (room.chatState === 'paused' && member.role !== 'owner' && member.role !== 'moderator') return;
     const now = Date.now();
     this.prune(room);
     const key = `typing:${member.id}`;
@@ -328,6 +336,53 @@ export class RoomDurableObject extends DurableObject<Env> {
     this.sweepSockets(room);
     for (const target of this.ctx.getWebSockets()) {
       if (target !== socket && this.attachment(target).state === 'authenticated') target.send(event);
+    }
+  }
+
+  // Room controls are re-authorized against the sender's current role on every frame.
+  private sendControl(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>, frame: unknown): void {
+    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || !allowedKeys(frame.payload, ['action', 'participantId'])) {
+      this.closeSocket(socket, 'INVALID_MESSAGE'); return;
+    }
+    const actor = room.participants.find((entry) => entry.id === auth.participantId);
+    if (!actor) return;
+    const action = frame.payload.action;
+    if (action === 'pause' || action === 'resume') {
+      if (frame.payload.participantId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      const next: ChatState = action === 'pause' ? 'paused' : 'active';
+      if (room.chatState === next) return;
+      room.chatState = next;
+      this.save(room);
+      this.broadcastState(room);
+      return;
+    }
+    if (action === 'mute' || action === 'unmute') {
+      const targetId = frame.payload.participantId;
+      if (typeof targetId !== 'string' || !/^p_[a-f0-9]{32}$/.test(targetId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (actor.role !== 'owner' && actor.role !== 'moderator') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      const target = room.participants.find((entry) => entry.id === targetId);
+      if (!target) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+      if (target.id === actor.id || target.role === 'owner' || (actor.role === 'moderator' && target.role === 'moderator')) {
+        this.socketError(socket, room, 'FORBIDDEN'); return;
+      }
+      const muted = action === 'mute';
+      if (target.muted === muted) return;
+      target.muted = muted;
+      this.save(room);
+      this.broadcastState(room);
+      return;
+    }
+    this.closeSocket(socket, 'INVALID_MESSAGE');
+  }
+
+  private broadcastState(room: Room): void {
+    const event = JSON.stringify({ v: 1, id: `evt_${uuid()}`, room: room.id, type: 'state', ts: iso(Date.now()),
+      payload: { chatState: room.chatState, muted: room.participants.filter((entry) => entry.muted).map((entry) => entry.id) },
+    });
+    this.sweepSockets(room);
+    for (const target of this.ctx.getWebSockets()) {
+      if (this.attachment(target).state === 'authenticated') target.send(event);
     }
   }
 
@@ -427,6 +482,8 @@ export class RoomDurableObject extends DurableObject<Env> {
     try {
       const room = JSON.parse(row.value) as Room;
       room.recentMessages ??= [];
+      room.chatState ??= 'active';
+      for (const participant of room.participants) participant.muted ??= false;
       return room;
     } catch { return null; }
   }
@@ -456,13 +513,13 @@ export class RoomDurableObject extends DurableObject<Env> {
     const now = Date.now();
     const expiresAt = now + Number(data.lifetimeHours) * 3_600_000;
     const ownerKey = token();
-    const participant: Participant = { id: `p_${uuid()}`, name: data.ownerName, kind: 'human', role: 'owner', joinedAt: iso(now), canInstruct: true };
+    const participant: Participant = { id: `p_${uuid()}`, name: data.ownerName, kind: 'human', role: 'owner', joinedAt: iso(now), canInstruct: true, muted: false };
     const salt = randomBytes(16);
     const room: Room = {
       id: String(data.id), name: String(data.name), description: typeof data.description === 'string' ? data.description : '',
       mode: data.mode as Mode, maxParticipants: Number(data.maxParticipants), createdAt: iso(now), expiresAt: iso(expiresAt),
       accessCodeEnabled: true, accessCode: { salt: b64(salt), hash: await hashCode(data.accessCode, salt) },
-      ownerKeyHash: await digest(ownerKey), state: 'active', participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [], recentMessages: [],
+      ownerKeyHash: await digest(ownerKey), state: 'active', chatState: 'active', participants: [participant], sessions: [], invitations: [], lockouts: [], rate: [], recentMessages: [],
     };
     const sessionToken = await this.createSession(room, participant);
     this.save(room);
@@ -548,7 +605,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       role = data.kind as Kind;
     }
     if (room.participants.length >= room.maxParticipants) return failure('ROOM_FULL', 409);
-    const participant: Participant = { id: `p_${uuid()}`, name: String(data.name), kind: data.kind as Kind, role, joinedAt: iso(Date.now()), canInstruct: false };
+    const participant: Participant = { id: `p_${uuid()}`, name: String(data.name), kind: data.kind as Kind, role, joinedAt: iso(Date.now()), canInstruct: false, muted: false };
     room.participants.push(participant);
     const sessionToken = await this.createSession(room, participant);
     room.lockouts = room.lockouts.filter((item) => item.key !== key);

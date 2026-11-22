@@ -595,3 +595,135 @@ it('authenticates the join frame before sending a server-authored welcome', asyn
     expect(raw).not.toContain('ownerKeyHash');
   } finally { socket.close(); }
 });
+
+function control(socket: WebSocket, payload: unknown) {
+  socket.send(JSON.stringify({ v: 1, type: 'control', payload }));
+}
+
+async function joinGuest(room: Access, name: string, kind: 'human' | 'agent' = 'human'): Promise<Access> {
+  const joined = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/join`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, kind, accessCode: 'socket-test-code' }),
+  });
+  expect(joined.status).toBe(200);
+  return joined.json() as Promise<Access>;
+}
+
+async function welcomeOf(access: Access) {
+  const socket = await connect(access);
+  const welcome = message(socket);
+  join(socket, access.sessionToken);
+  const parsed = JSON.parse(await welcome) as Record<string, unknown>;
+  socket.close();
+  return parsed;
+}
+
+it('pauses and resumes room chat for non-privileged participants', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Pause guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const stateEvent = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'pause' });
+    expect(await stateEvent).toMatchObject({ type: 'state', payload: { chatState: 'paused' } });
+
+    const paused = outcome(guestSocket);
+    chat(guestSocket, { text: 'Tidak terkirim' });
+    expect(await paused).toMatchObject({ type: 'error', payload: { code: 'ROOM_PAUSED' } });
+
+    const ownerMessage = matchingMessage(guestSocket, (event) => event.type === 'message');
+    chat(owner, { text: 'Owner tetap bisa' });
+    expect(await ownerMessage).toMatchObject({ type: 'message', payload: { text: 'Owner tetap bisa' } });
+
+    const snapshot = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}`, {
+      headers: { authorization: `Bearer ${room.sessionToken}` },
+    });
+    expect(snapshot.status).toBe(200);
+    const view = await snapshot.json() as { room: Record<string, unknown> };
+    expect(view.room.chatState).toBe('paused');
+
+    const resumed = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'resume' });
+    expect(await resumed).toMatchObject({ type: 'state', payload: { chatState: 'active' } });
+
+    const delivered = matchingMessage(owner, (event) => event.type === 'message');
+    chat(guestSocket, { text: 'Sudah bisa lagi' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Sudah bisa lagi' } });
+  } finally { owner.close(); guestSocket.close(); }
+});
+
+it('rejects room controls from a participant without control permission', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Control guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const denied = outcome(guestSocket);
+    control(guestSocket, { action: 'pause' });
+    expect(await denied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const delivered = matchingMessage(owner, (event) => event.type === 'message');
+    chat(guestSocket, { text: 'Room tidak ikut pause' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Room tidak ikut pause' } });
+  } finally { owner.close(); guestSocket.close(); }
+});
+
+it('mutes and unmutes a participant and reports it in welcome', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Mute guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const stateEvent = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'mute', participantId: guest.participant.id });
+    expect(await stateEvent).toMatchObject({ type: 'state',
+      payload: { muted: [guest.participant.id] } });
+
+    const muted = outcome(guestSocket);
+    chat(guestSocket, { text: 'Sedang dibisukan' });
+    expect(await muted).toMatchObject({ type: 'error', payload: { code: 'MUTED' } });
+
+    const welcome = await welcomeOf(guest);
+    const participants = (welcome.payload as Record<string, unknown>).participants as Record<string, unknown>[];
+    expect(participants.find((entry) => entry.id === guest.participant.id)).toMatchObject({ muted: true });
+
+    const cleared = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'unmute', participantId: guest.participant.id });
+    expect(await cleared).toMatchObject({ type: 'state', payload: { muted: [] } });
+
+    const delivered = matchingMessage(owner, (event) => event.type === 'message');
+    chat(guestSocket, { text: 'Sudah bersuara' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Sudah bersuara' } });
+  } finally { owner.close(); guestSocket.close(); }
+});
+
+it('lets a moderator mute a human but not pause or mute the owner', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const moderator = await joinGuest(room, 'Mod guest');
+  const target = await joinGuest(room, 'Target guest');
+  const promoted = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/participants/${moderator.participant.id}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${room.sessionToken}` },
+    body: JSON.stringify({ role: 'moderator' }),
+  });
+  expect(promoted.status).toBe(200);
+  const moderatorSocket = await authenticated(moderator);
+  const targetSocket = await authenticated(target);
+  try {
+    const modState = matchingMessage(targetSocket, (event) => event.type === 'state');
+    control(moderatorSocket, { action: 'mute', participantId: target.participant.id });
+    expect(await modState).toMatchObject({ type: 'state', payload: { muted: [target.participant.id] } });
+    const muted = outcome(targetSocket);
+    chat(targetSocket, { text: 'Dibisukan moderator' });
+    expect(await muted).toMatchObject({ type: 'error', payload: { code: 'MUTED' } });
+
+    const pauseDenied = outcome(moderatorSocket);
+    control(moderatorSocket, { action: 'pause' });
+    expect(await pauseDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const ownerMuteDenied = outcome(moderatorSocket);
+    control(moderatorSocket, { action: 'mute', participantId: room.participant.id });
+    expect(await ownerMuteDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+  } finally { owner.close(); moderatorSocket.close(); targetSocket.close(); }
+});
