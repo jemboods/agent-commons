@@ -822,3 +822,81 @@ it('rejects interrupt from a participant who is not the owner', async () => {
     expect(view.room.chatState).toBe('active');
   } finally { owner.close(); agentSocket.close(); humanSocket.close(); }
 });
+
+it('removes a participant, revoking their session and closing their socket', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Removed guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const offline = matchingMessage(owner, (event) => event.type === 'presence' &&
+      (event.payload as Record<string, unknown>).participantId === guest.participant.id &&
+      (event.payload as Record<string, unknown>).online === false);
+    const closing = closed(guestSocket);
+    control(owner, { action: 'remove', participantId: guest.participant.id });
+    expect((await closing).reason).toBe('UNAUTHORIZED');
+    expect(await offline).toMatchObject({ type: 'presence', payload: { online: false } });
+
+    const view = await roomSnapshot(room);
+    expect(view.participants.map((entry) => entry.id)).not.toContain(guest.participant.id);
+
+    const stale = await connect(guest);
+    const rejected = outcome(stale);
+    join(stale, guest.sessionToken);
+    expect(await rejected).toEqual({ closed: 'UNAUTHORIZED' });
+    stale.close();
+
+    const rejoined = await joinGuest(room, 'Removed guest returns');
+    const rejoinedSocket = await authenticated(rejoined);
+    const delivered = matchingMessage(owner, (event) => event.type === 'message');
+    chat(rejoinedSocket, { text: 'Balik lagi' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Balik lagi' } });
+    rejoinedSocket.close();
+  } finally { owner.close(); guestSocket.close(); }
+});
+
+it('rejects remove for the owner and from a moderator', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const moderator = await joinGuest(room, 'Remove mod');
+  const human = await joinGuest(room, 'Remove target');
+  const promoted = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}/participants/${moderator.participant.id}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${room.sessionToken}` },
+    body: JSON.stringify({ role: 'moderator' }),
+  });
+  expect(promoted.status).toBe(200);
+  const moderatorSocket = await authenticated(moderator);
+  try {
+    const modDenied = outcome(moderatorSocket);
+    control(moderatorSocket, { action: 'remove', participantId: human.participant.id });
+    expect(await modDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const selfDenied = outcome(owner);
+    control(owner, { action: 'remove', participantId: room.participant.id });
+    expect(await selfDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const view = await roomSnapshot(room);
+    expect(view.participants.map((entry) => entry.id)).toContain(human.participant.id);
+  } finally { owner.close(); moderatorSocket.close(); }
+});
+
+it('delivers an owner broadcast to everyone while the room is paused', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const guest = await joinGuest(room, 'Broadcast guest');
+  const guestSocket = await authenticated(guest);
+  try {
+    const paused = matchingMessage(guestSocket, (event) => event.type === 'state');
+    control(owner, { action: 'pause' });
+    expect(await paused).toMatchObject({ type: 'state', payload: { chatState: 'paused' } });
+
+    const denied = outcome(guestSocket);
+    control(guestSocket, { action: 'broadcast', text: 'Bukan pengumuman resmi' });
+    expect(await denied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const announcement = matchingMessage(guestSocket, (event) => event.type === 'message');
+    control(owner, { action: 'broadcast', text: 'Pengumuman: room di-pause dulu' });
+    expect(await announcement).toMatchObject({ type: 'message',
+      payload: { text: 'Pengumuman: room di-pause dulu', broadcast: true } });
+  } finally { owner.close(); guestSocket.close(); }
+});

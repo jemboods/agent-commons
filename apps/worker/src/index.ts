@@ -304,17 +304,27 @@ export class RoomDurableObject extends DurableObject<Env> {
       ...(replyTo === undefined ? {} : { replyTo }),
       ...(mentions === undefined ? {} : { mentions }),
     };
+    this.prune(room);
+    if (!this.consumeChatBudget(room, member, now)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
+    this.publishChatMessage(socket, room, member, now, payload);
+  }
+
+  // One shared send path for chat messages and owner broadcasts.
+  private consumeChatBudget(room: Room, member: Participant, now: number): boolean {
+    const key = `chat:${member.id}`;
+    let budget = room.rate.find((entry) => entry.key === key);
+    if (!budget) { budget = { key, count: 0, until: now + 2000 }; room.rate.push(budget); }
+    if (budget.count >= (member.kind === 'agent' ? 1 : 5)) return false;
+    budget.count++;
+    return true;
+  }
+
+  private publishChatMessage(socket: WebSocket, room: Room, member: Participant, now: number, payload: Record<string, unknown>): void {
     const id = `msg_${uuid()}`;
     const event = JSON.stringify({ v: 1, id, room: room.id, type: 'message',
       from: { id: member.id, name: member.name, kind: member.kind }, ts: iso(now), payload,
     });
     if (new TextEncoder().encode(event).byteLength > 32 * 1024) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
-    this.prune(room);
-    const key = `chat:${member.id}`;
-    let budget = room.rate.find((entry) => entry.key === key);
-    if (!budget) { budget = { key, count: 0, until: now + 2000 }; room.rate.push(budget); }
-    if (budget.count >= (member.kind === 'agent' ? 1 : 5)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
-    budget.count++;
     room.recentMessages.push({ id, expiresAt: now + REPLY_TARGET_TTL_MS });
     if (room.recentMessages.length > MAX_REPLY_TARGETS) room.recentMessages.splice(0, room.recentMessages.length - MAX_REPLY_TARGETS);
     this.save(room);
@@ -348,14 +358,14 @@ export class RoomDurableObject extends DurableObject<Env> {
 
   // Room controls are re-authorized against the sender's current role on every frame.
   private sendControl(socket: WebSocket, room: Room, auth: Extract<SocketAttachment, { state: 'authenticated' }>, frame: unknown): void {
-    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || !allowedKeys(frame.payload, ['action', 'participantId', 'mode'])) {
+    if (!isObject(frame) || !allowedKeys(frame, ['v', 'type', 'payload']) || frame.v !== 1 || !isObject(frame.payload) || !allowedKeys(frame.payload, ['action', 'participantId', 'mode', 'text'])) {
       this.closeSocket(socket, 'INVALID_MESSAGE'); return;
     }
     const actor = room.participants.find((entry) => entry.id === auth.participantId);
     if (!actor) return;
     const action = frame.payload.action;
     if (action === 'pause' || action === 'resume') {
-      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
       if (action === 'pause') {
         if (room.chatState === 'paused') return;
@@ -370,7 +380,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'mute' || action === 'unmute') {
-      if (frame.payload.mode !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       const targetId = frame.payload.participantId;
       if (typeof targetId !== 'string' || !/^p_[a-f0-9]{32}$/.test(targetId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner' && actor.role !== 'moderator') { this.socketError(socket, room, 'FORBIDDEN'); return; }
@@ -387,7 +397,7 @@ export class RoomDurableObject extends DurableObject<Env> {
       return;
     }
     if (action === 'interrupt') {
-      if (frame.payload.participantId !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (frame.payload.participantId !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       const mode = frame.payload.mode;
       if (mode !== 'soft' && mode !== 'hard') { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
       if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
@@ -396,6 +406,30 @@ export class RoomDurableObject extends DurableObject<Env> {
       this.save(room);
       this.broadcastInterrupt(room);
       if (mode === 'hard') this.broadcastState(room);
+      return;
+    }
+    if (action === 'remove') {
+      if (frame.payload.mode !== undefined || frame.payload.text !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      const targetId = frame.payload.participantId;
+      if (typeof targetId !== 'string' || !/^p_[a-f0-9]{32}$/.test(targetId)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      const target = room.participants.find((entry) => entry.id === targetId);
+      if (!target) { this.socketError(socket, room, 'INVALID_MESSAGE'); return; }
+      if (target.id === actor.id || target.role === 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      room.sessions = room.sessions.filter((entry) => entry.participantId !== target.id);
+      room.participants = room.participants.filter((entry) => entry.id !== target.id);
+      this.save(room);
+      this.broadcastPresence(room, target.id, false);
+      return;
+    }
+    if (action === 'broadcast') {
+      if (frame.payload.participantId !== undefined || frame.payload.mode !== undefined) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (!validString(frame.payload.text, 1, 32 * 1024)) { this.closeSocket(socket, 'INVALID_MESSAGE'); return; }
+      if (actor.role !== 'owner') { this.socketError(socket, room, 'FORBIDDEN'); return; }
+      const now = Date.now();
+      this.prune(room);
+      if (!this.consumeChatBudget(room, actor, now)) { this.socketError(socket, room, 'RATE_LIMITED'); return; }
+      this.publishChatMessage(socket, room, actor, now, { text: frame.payload.text, broadcast: true });
       return;
     }
     this.closeSocket(socket, 'INVALID_MESSAGE');
