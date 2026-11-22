@@ -1,6 +1,6 @@
 # API — Room dan awal Tahap 3 (WebSocket)
 
-Room memakai HTTP dan Durable Object SQLite-backed. Tahap 3 menyediakan autentikasi WebSocket hibernatable, welcome, fan-out chat teks live, presence, dan typing efemeral di backend; **integrasi browser belum tersedia**. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
+Room memakai HTTP dan Durable Object SQLite-backed. Tahap 3 menyediakan autentikasi WebSocket hibernatable, welcome, fan-out chat teks live, presence, dan typing efemeral di backend serta integrasi chat live di browser. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
 
 ## Perilaku umum
 

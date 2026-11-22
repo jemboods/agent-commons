@@ -1,6 +1,6 @@
-# Tahap 3 — checkpoint Chat
+# Tahap 3 — Chat
 
-Status: **berjalan, belum selesai**. Kontrak: `docs/stage-3-contract.md`.
+Status: **selesai dan terverifikasi**. Kontrak: `docs/stage-3-contract.md`. Commit terverifikasi: `bd87ca8`, [CI 44986578161 lulus](https://github.com/jemboods/agent-commons/actions/runs/44986578161).
 
 ## Slice 1 — transport dan autentikasi WebSocket
 
@@ -47,7 +47,25 @@ Commit `e9bf9170e1c64f23eddff08b05a1aa1b2cd72a63`: [CI 44930120673 lulus](https:
 - Verifikasi lokal: `pnpm --filter @agent-commons/worker test` — **60 tes lulus**, 3 file, 9,44 detik; `pnpm --filter @agent-commons/worker typecheck`, ESLint pada dua file Worker yang berubah, dan `git diff --check` lulus. Peringatan proxy/pool Cloudflare lama tetap ada; tanpa dependency/teknologi baru.
 - Commit `47a3e0115bf63ea6dafd0f830abc3caebc297c60`: [CI 44946549954 lulus](https://github.com/jemboods/agent-commons/actions/runs/44946549954).
 
-## Lanjut
 
-- Slice 1, 2a, 2b, dan 3a backend sudah di-commit dengan CI hijau. Sisa Tahap 3: integrasi chat di browser (koneksi + rejoin memakai session in-memory, timeline live, presence, kirim/reply/mention lewat ID peserta, kode sebagai teks, status koneksi/error jelas) dan slice 4 acceptance browser-ke-backend di GitHub Actions beserta dokumentasi wire shape final.
-- Integrasi browser sengaja belum dimulai: menunggu keputusan owner setelah slice backend ini dilaporkan. Jangan menandai Tahap 3 selesai sebelum acceptance browser lulus di CI dan commit/link final dicatat.
+## Slice 3b — integrasi chat di browser
+
+- Commit `834443e`: hook `useRoomChat` di `apps/web/src/chat.ts` (join frame membawa session token dari memori, tanpa retry otomatis, tanpa penyimpanan browser) dan UI chat di `App.tsx`: timeline live, presence dari welcome/event, indikator typing, kirim/reply, mention lewat ID peserta dari roster, teks tetap inert, status koneksi dan error per kode (FORBIDDEN/RATE_LIMITED) ditampilkan jelas.
+- Commit `b70aa94`: dev loopback mengarahkan WebSocket langsung ke Worker (5173 ke 8787) karena proxy Vite tidak meneruskan upgrade WebSocket; allowlist origin Worker tetap berlaku.
+- Tes browser `tests/e2e/chat.spec.ts`: dua browser bertukar pesan, reply, dan mention; typing dan presence terlihat lintas halaman; observer ditolak saat mengirim; storage browser tetap kosong.
+
+## Perbaikan acceptance
+
+- CI untuk `834443e` (run 44947379602) dan `b70aa94` (run 44948096141) merah. Slice 3b ditulis Hermes; perbaikan acceptance berikut dikerjakan Muse atas instruksi owner karena kuota harian Hermes habis. Log CI tidak dapat diunduh dari box, jadi kegagalan direproduksi lokal di luar box dengan Playwright melawan backend asli.
+- Commit `9063d10`: roster halaman hanya berasal dari snapshot HTTP, jadi peserta yang join setelah snapshot tidak punya baris roster; presence, typing, dan tombol mention untuk mereka tidak pernah tampil. Halaman kini menyinkronkan ulang roster secara diam-diam saat presence menampilkan peserta online yang belum dikenal, sekali per set peserta baru.
+- Commit `bd87ca8`: `getByLabel('Message')` pada spec ambigu karena pencocokan substring; ia ikut mencocokkan form "Send a live message" dan tombol "Reply to message from ...". Semua pemanggilan kini memakai `{ exact: true }`, pola yang sama dengan 'Room ID' pada spec yang sama.
+
+## Slice 4 — verifikasi final
+
+- Suite penuh `pnpm check` (lint, typecheck, tes Worker, build, Playwright e2e) hijau di GitHub Actions untuk commit `bd87ca8`: [CI 44986578161](https://github.com/jemboods/agent-commons/actions/runs/44986578161). E2E 11 tes lulus (foundation, rooms, chat); tes Worker 60 lulus.
+- Cakupan acceptance kontrak slice 4 (origin buruk, auth invalid/expired/revoked, isolasi room, penolakan observer, batas ukuran dan laju, close/leave/presence, pengiriman multi-klien) tercakup oleh tes Worker dan e2e chat.
+- Bentuk wire dan batas live-only didokumentasikan di `docs/api-reference.md`. Tidak ada deployment pada tahap ini.
+
+## Selesai
+
+- Tahap 3 selesai. Roadmap berlanjut ke Tahap 4 (Kontrol manusia) sesuai `docs/roadmap-execution.md`; penulis otomatis `auto-resume-stage-work` masih dijeda, jadi tahap berikutnya menunggu instruksi owner.
