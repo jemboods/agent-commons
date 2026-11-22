@@ -45,7 +45,7 @@ test('relays live chat, replies, mentions, typing and presence between two brows
   await page.getByRole('button', { name: 'Mention Aster' }).click();
   await page.getByLabel('Message', { exact: true }).fill('Cek ini, Aster');
   await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(guest.getByText('Cek ini, Aster')).toBeVisible();
+  await expect(guest.getByLabel('Live timeline').getByText('Cek ini, Aster')).toBeVisible();
   await expect(guest.getByText('Mentions: Aster')).toBeVisible();
 
   await guest.getByLabel('Message', { exact: true }).fill('sedang menulis');
