@@ -26,6 +26,31 @@ type Connection = 'checking' | 'connected' | 'unavailable';
 type CredentialType = 'access-code' | 'invitation';
 type RoleDraft = { role: Exclude<ParticipantRole, 'owner'>; canInstruct: boolean };
 
+const SHORTENER_INVITE_URL = 'https://go.doloresblick1.workers.dev/api/shorten-invite';
+
+// Builds the long invite URL that pre-fills the join form for a room.
+function buildInviteUrl(roomId: string, accessCode: string): string {
+  const payload = btoa(JSON.stringify({ r: roomId, c: accessCode })).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  return `${window.location.origin}${window.location.pathname}?invite=${payload}`;
+}
+
+// Asks the personal shortener for a short version of an invite link.
+// Returns null when shortening is unavailable; callers keep the long link.
+async function requestShortInviteUrl(longUrl: string): Promise<string | null> {
+  try {
+    const response = await fetch(SHORTENER_INVITE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: longUrl }),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { shortUrl?: unknown };
+    return typeof data.shortUrl === 'string' ? data.shortUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return 'The server could not be reached. Your credentials were not saved.';
   if (error.code === 'ROOM_FULL') return 'This room is full.';
@@ -84,6 +109,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
   const [createdAccessCode, setCreatedAccessCode] = useState('');
+  const [shortInvite, setShortInvite] = useState<{ forUrl: string; shortUrl: string } | null>(null);
   const [keySaved, setKeySaved] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -482,6 +508,20 @@ export default function App() {
     : '';
 
   const isOwner = snapshot?.self.role === 'owner';
+  const inviteLongUrl = session && createdAccessCode ? buildInviteUrl(session.room.id, createdAccessCode) : null;
+
+  useEffect(() => {
+    if (!inviteLongUrl) return;
+    let cancelled = false;
+    void requestShortInviteUrl(inviteLongUrl).then((shortUrl) => {
+      if (!cancelled && shortUrl) setShortInvite({ forUrl: inviteLongUrl, shortUrl });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteLongUrl]);
+
+  const inviteDisplayUrl = inviteLongUrl && shortInvite?.forUrl === inviteLongUrl ? shortInvite.shortUrl : inviteLongUrl;
 
   return (
     <main className="app-shell">
@@ -531,10 +571,10 @@ export default function App() {
                   <p id="invite-link-heading" className="eyebrow">Shareable invite link</p>
                   <p>Send this short link to participants so they can join automatically with the room ID and access code pre-filled.</p>
                   <label className="field-label" htmlFor="invite-link">Invite link</label>
-                  <input id="invite-link" className="text-input secret-input" value={`${window.location.origin}${window.location.pathname}?invite=${btoa(JSON.stringify({ r: session.room.id, c: createdAccessCode })).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}`} readOnly />
+                  <input id="invite-link" className="text-input secret-input" value={inviteDisplayUrl ?? ''} readOnly />
                   <button className="small-button" type="button" onClick={() => {
-                    const link = `${window.location.origin}${window.location.pathname}?invite=${btoa(JSON.stringify({ r: session.room.id, c: createdAccessCode })).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}`;
-                    navigator.clipboard.writeText(link);
+                    if (!inviteDisplayUrl) return;
+                    navigator.clipboard.writeText(inviteDisplayUrl);
                     setNotice('Invite link copied to clipboard.');
                   }}>Copy invite link</button>
                 </section>
