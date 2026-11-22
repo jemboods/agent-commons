@@ -26,7 +26,7 @@ type Connection = 'checking' | 'connected' | 'unavailable';
 type CredentialType = 'access-code' | 'invitation';
 type RoleDraft = { role: Exclude<ParticipantRole, 'owner'>; canInstruct: boolean };
 
-const SHORTENER_INVITE_URL = 'https://go.doloresblick1.workers.dev/api/shorten-invite';
+const SHORTENER_INVITE_URL = 'https://go.jemboods.workers.dev/api/shorten-invite';
 
 // Builds the long invite URL that pre-fills the join form for a room.
 function buildInviteUrl(roomId: string, accessCode: string): string {
@@ -148,6 +148,7 @@ export default function App() {
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [mentionIds, setMentionIds] = useState<string[]>([]);
+  const [showGroupInfo, setShowGroupInfo] = useState(true);
   const chat = useRoomChat({
     roomId: session?.room.id ?? '',
     sessionToken: session?.sessionToken ?? '',
@@ -564,260 +565,264 @@ export default function App() {
           {error && <p className="error-banner" role="alert">{error}</p>}
           {notice && <p className="notice" role="status">{notice}</p>}
           {snapshot && session ? (
-            <div className="room-view">
-              <div className="page-heading room-title-row">
-                <div>
-                  <p className="eyebrow">Room snapshot · {modeLabel(snapshot.room.mode)}</p>
-                  <h1>{snapshot.room.name}</h1>
-                  <p className="room-id">Room ID: {snapshot.room.id}</p>
-                  {snapshot.room.description && <p>{snapshot.room.description}</p>}
+            <div className="tg-room-layout">
+              <header className="tg-topbar">
+                <div className="tg-topbar-left">
+                  <span className="room-avatar" aria-hidden="true">{senderInitials(snapshot.room.name)}</span>
+                  <div>
+                    <h1 className="tg-room-title">{snapshot.room.name}</h1>
+                    <p className="tg-room-subtitle">
+                      {snapshot.participants.length} participants · {onlineIds.size} online · {modeLabel(snapshot.room.mode)} mode
+                    </p>
+                  </div>
                 </div>
-                <button className="secondary-button" type="button" onClick={refreshSnapshot} disabled={busy}>{busy ? 'Working…' : 'Refresh roster'}</button>
-              </div>
+                <div className="tg-topbar-right">
+                  <button className="secondary-button" type="button" onClick={refreshSnapshot} disabled={busy}>{busy ? 'Working…' : 'Refresh'}</button>
+                  <button className="secondary-button" type="button" aria-pressed={showGroupInfo} onClick={() => setShowGroupInfo((v) => !v)}>
+                    {showGroupInfo ? 'Hide Info ✕' : 'Group Info ℹ️'}
+                  </button>
+                  {!isOwner ? (
+                    <button className="secondary-button" type="button" onClick={onLeaveRoom} disabled={busy}>Leave</button>
+                  ) : (
+                    <button className="danger-button" type="button" onClick={onDeleteRoom} disabled={busy}>Delete</button>
+                  )}
+                </div>
+              </header>
 
-              {ownerKey && !keySaved && (
-                <section className="secret-card" aria-labelledby="owner-key-heading">
-                  <p id="owner-key-heading" className="eyebrow">Owner key — shown once</p>
-                  <p>Keep this key somewhere safe. It is needed to recover owner access.</p>
-                  <label className="field-label" htmlFor="owner-key">Owner key</label>
-                  <input id="owner-key" className="text-input secret-input" value={ownerKey} readOnly />
-                  <button className="small-button" type="button" onClick={dismissOwnerKey}>I saved the owner key</button>
-                </section>
-              )}
-              {isOwner && createdAccessCode && (
-                <section className="secret-card" aria-labelledby="invite-link-heading">
-                  <p id="invite-link-heading" className="eyebrow">Shareable invite link</p>
-                  <p>Send this short link to participants so they can join automatically with the room ID and access code pre-filled.</p>
-                  <label className="field-label" htmlFor="invite-link">Invite link</label>
-                  <input id="invite-link" className="text-input secret-input" value={inviteDisplayUrl ?? ''} readOnly />
-                  <button className="small-button" type="button" onClick={() => {
-                    if (!inviteDisplayUrl) return;
-                    navigator.clipboard.writeText(inviteDisplayUrl);
-                    setNotice('Invite link copied to clipboard.');
-                  }}>Copy invite link</button>
-                </section>
-              )}
-              {keySaved && <p className="notice">Owner key hidden. It will not be shown again.</p>}
-              {isOwner && <p className="notice subtle-notice">Your owner session is held only in this page&apos;s memory.</p>}
-
-              <section className="panel-card chat-card" aria-labelledby="chat-heading">
-                <div className="card-heading">
-                  <div className="chat-title">
-                    <span className="room-avatar" aria-hidden="true">{senderInitials(snapshot.room.name)}</span>
-                    <div>
-                      <p className="chat-room-name" id="chat-heading">{snapshot.room.name}</p>
-                      <p className="chat-subline">Live only · no history</p>
+              <div className="tg-workspace">
+                <section className="tg-chat-pane">
+                  {error && <p className="error-banner" role="alert">{error}</p>}
+                  {notice && <p className="notice" role="status">{notice}</p>}
+                  
+                  {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
+                  {chat.chatState === 'paused' && <p className="notice" role="status">Room paused by the owner. Sending is limited to the owner and moderators.</p>}
+                  {chat.chatState === 'interrupted' && <p className="notice" role="status">Agents interrupted by the owner. Agent messages are blocked until the owner resumes the room.</p>}
+                  {chat.interrupt && chat.chatState === 'active' && <p className="field-hint">Soft interrupt sent by {interruptByName}. Agents were notified; chat continues.</p>}
+                  
+                  {isOwner && chat.status === 'live' && (
+                    <div className="control-row" aria-label="Room controls">
+                      {chat.chatState === 'active' ? (
+                        <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'pause' })}>Pause room</button>
+                      ) : (
+                        <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'resume' })}>Resume room</button>
+                      )}
+                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'soft' })}>Interrupt agents (soft)</button>
+                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'hard' })}>Interrupt agents (hard)</button>
                     </div>
-                  </div>
-                  <span className={`chat-status ${chat.status}`} data-chat-status={chat.status}>{chatStatusLabel(chat.status)}</span>
-                </div>
-                {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
-                {chat.chatState === 'paused' && <p className="notice" role="status">Room paused by the owner. Sending is limited to the owner and moderators.</p>}
-                {chat.chatState === 'interrupted' && <p className="notice" role="status">Agents interrupted by the owner. Agent messages are blocked until the owner resumes the room.</p>}
-                {chat.interrupt && chat.chatState === 'active' && <p className="field-hint">Soft interrupt sent by {interruptByName}. Agents were notified; chat continues.</p>}
-                {isOwner && chat.status === 'live' && (
-                  <div className="control-row" aria-label="Room controls">
-                    {chat.chatState === 'active' ? (
-                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'pause' })}>Pause room</button>
-                    ) : (
-                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'resume' })}>Resume room</button>
-                    )}
-                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'soft' })}>Interrupt agents (soft)</button>
-                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'hard' })}>Interrupt agents (hard)</button>
-                  </div>
-                )}
-                {chat.pins.length > 0 && (
-                  <section className="pinned-panel" aria-label="Pinned messages">
-                    <p className="eyebrow">Pinned messages</p>
-                    <ul className="pinned-list">
-                      {chat.pins.map((pin) => (
-                        <li key={pin.messageId} className="pinned-item">
-                          <strong>{pin.from.name}</strong>
-                          <span className="pinned-text">{pin.text}</span>
-                          {canControl && <button className="small-button" type="button" aria-label={`Unpin message from ${pin.from.name}`} onClick={() => chat.sendControl({ action: 'unpin', messageId: pin.messageId })}>Unpin</button>}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-                <p className="field-hint">Messages exist only while connections are live. Nothing is stored, replayed, or retried after a reconnect.</p>
-                {chat.status === 'closed' && (
-                  <div className="chat-reconnect">
-                    <p className="field-hint">The live connection closed{chat.closeReason ? ` (${chat.closeReason})` : ''}.</p>
-                    <button className="small-button" type="button" onClick={chat.reconnect}>Reconnect live chat</button>
-                  </div>
-                )}
-                <ol className="timeline" aria-label="Live timeline">
-                  {chat.messages.length === 0 && <li className="timeline-empty">No live messages yet.</li>}
-                  {chat.messages.map((message, index) => {
-                    const quoted = message.replyTo ? chat.messages.find((item) => item.id === message.replyTo) : undefined;
-                    const isOwn = message.from.id === snapshot.self.id;
-                    const color = senderColor(message.from.id);
-                    const time = new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    const previous = index > 0 ? chat.messages[index - 1] : undefined;
-                    const grouped = previous !== undefined && !previous.broadcast && previous.from.id === message.from.id;
-                    if (message.broadcast) {
+                  )}
+
+                  {chat.pins.length > 0 && (
+                    <section className="pinned-panel" aria-label="Pinned messages">
+                      <p className="eyebrow">Pinned messages</p>
+                      <ul className="pinned-list">
+                        {chat.pins.map((pin) => (
+                          <li key={pin.messageId} className="pinned-item">
+                            <strong>{pin.from.name}</strong>
+                            <span className="pinned-text">{pin.text}</span>
+                            {canControl && <button className="small-button" type="button" aria-label={`Unpin message from ${pin.from.name}`} onClick={() => chat.sendControl({ action: 'unpin', messageId: pin.messageId })}>Unpin</button>}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+
+                  <ol className="timeline tg-timeline" aria-label="Live timeline">
+                    {chat.messages.length === 0 && <li className="timeline-empty">No live messages yet. Send the first message to start the conversation!</li>}
+                    {chat.messages.map((message, index) => {
+                      const quoted = message.replyTo ? chat.messages.find((item) => item.id === message.replyTo) : undefined;
+                      const isOwn = message.from.id === snapshot.self.id;
+                      const color = senderColor(message.from.id);
+                      const time = new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      const previous = index > 0 ? chat.messages[index - 1] : undefined;
+                      const grouped = previous !== undefined && !previous.broadcast && previous.from.id === message.from.id;
+                      if (message.broadcast) {
+                        return (
+                          <li className="timeline-item broadcast-row" key={message.id} data-testid="chat-message">
+                            <div className="broadcast-bubble">
+                              <p className="broadcast-label"><span className="broadcast-badge">Broadcast</span> {message.from.name}</p>
+                              <p className="bubble-text">{message.text}</p>
+                              <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
+                            </div>
+                          </li>
+                        );
+                      }
                       return (
-                        <li className="timeline-item broadcast-row" key={message.id} data-testid="chat-message">
-                          <div className="broadcast-bubble">
-                            <p className="broadcast-label"><span className="broadcast-badge">Broadcast</span> {message.from.name}</p>
-                            <p className="bubble-text">{message.text}</p>
-                            <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
+                        <li className={`timeline-item${isOwn ? ' own' : ''}${grouped ? ' grouped' : ''}`} key={message.id} data-testid="chat-message">
+                          {!isOwn && <span className={`avatar${grouped ? ' ghost' : ''}`} style={{ backgroundColor: `${color}26`, color }} aria-hidden="true">{senderInitials(message.from.name)}</span>}
+                          <div className="bubble-col">
+                            <div className={`bubble${isOwn ? ' own' : ''}`}>
+                              {!isOwn && !grouped && (
+                                <p className="bubble-name" style={{ color }}>
+                                  {message.from.name}
+                                  {message.from.kind === 'agent' && <span className="bubble-kind">agent</span>}
+                                </p>
+                              )}
+                              {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
+                              <p className="bubble-text">{message.text}</p>
+                              {message.mentions && message.mentions.length > 0 && (
+                                <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
+                              )}
+                              <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
+                            </div>
+                            <div className="bubble-actions">
+                              <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
+                              {canControl && <button className="small-button" type="button" aria-label={`Pin message from ${message.from.name}`} onClick={() => chat.sendControl({ action: 'pin', messageId: message.id, text: message.text })}>Pin</button>}
+                            </div>
                           </div>
                         </li>
                       );
-                    }
-                    return (
-                      <li className={`timeline-item${isOwn ? ' own' : ''}${grouped ? ' grouped' : ''}`} key={message.id} data-testid="chat-message">
-                        {!isOwn && <span className={`avatar${grouped ? ' ghost' : ''}`} style={{ backgroundColor: `${color}26`, color }} aria-hidden="true">{senderInitials(message.from.name)}</span>}
-                        <div className="bubble-col">
-                          <div className={`bubble${isOwn ? ' own' : ''}`}>
-                            {!isOwn && !grouped && (
-                              <p className="bubble-name" style={{ color }}>
-                                {message.from.name}
-                                {message.from.kind === 'agent' && <span className="bubble-kind">agent</span>}
-                              </p>
-                            )}
-                            {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
-                            <p className="bubble-text">{message.text}</p>
-                            {message.mentions && message.mentions.length > 0 && (
-                              <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
-                            )}
-                            <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
-                          </div>
-                          <div className="bubble-actions">
-                            <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
-                            {canControl && <button className="small-button" type="button" aria-label={`Pin message from ${message.from.name}`} onClick={() => chat.sendControl({ action: 'pin', messageId: message.id, text: message.text })}>Pin</button>}
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ol>
-                {typingNames.length > 0 && <p className="typing-line" aria-live="polite">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
-                {canSendChat ? (
-                  <form className="chat-form" aria-label="Send a live message" onSubmit={onSendChat}>
-                    {replyTarget && (
-                      <div className="reply-banner">
-                        <span>Replying to {replyTarget.from.name}: {replyTargetText.slice(0, 60)}</span>
-                        <button className="small-button" type="button" aria-label="Cancel reply" onClick={() => setReplyTarget(null)}>Cancel</button>
-                      </div>
-                    )}
-                    {mentionIds.length > 0 && (
-                      <p className="field-hint">Mentions: {mentionIds.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
-                    )}
-                    <label className="field-label sr-only" htmlFor="chat-message-text">Message</label>
-                    <div className="composer-row">
-                      <textarea id="chat-message-text" className="text-input textarea" rows={1} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Type a message" />
-                      <button className="send-button" type="submit" disabled={!chatText.trim()}>
-                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.4l17.8-7.5c.8-.35.8-1.45 0-1.8L3.4 3.6c-.66-.29-1.39.2-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .72.73 1.2 1.39.91z" /></svg>
-                        <span className="send-label">Send message</span>
-                      </button>
+                    })}
+                  </ol>
+
+                  {typingNames.length > 0 && <p className="typing-line" aria-live="polite">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
+                  
+                  {chat.status === 'closed' && (
+                    <div className="chat-reconnect">
+                      <p className="field-hint">The live connection closed{chat.closeReason ? ` (${chat.closeReason})` : ''}.</p>
+                      <button className="small-button" type="button" onClick={chat.reconnect}>Reconnect live chat</button>
                     </div>
-                    {isOwner && <button className="small-button" type="button" aria-pressed={broadcastMode} onClick={() => setBroadcastMode((value) => !value)}>Broadcast</button>}
-                    {broadcastMode && isOwner && <p className="field-hint">Broadcast mode: the next send is an owner announcement, delivered even while the room is paused.</p>}
-                  </form>
-                ) : (
-                  chat.status === 'live' && <p className="field-hint">You are an observer in this room: live messages are readable, sending is disabled.</p>
-                )}
-              </section>
+                  )}
 
-              <section className="panel-card roster-card" aria-labelledby="roster-heading">
-                <div className="card-heading"><div><p className="eyebrow">Membership only</p><h2 id="roster-heading">Participants <span className="count-pill">{snapshot.participants.length}/{snapshot.room.maxParticipants}</span></h2></div><span className="card-symbol" aria-hidden="true">◉</span></div>
-                <p className="field-hint">Online status comes from each participant&apos;s live connection; the roster itself is a server snapshot of membership.</p>
-                <ul className="participant-list">
-                  {snapshot.participants.map((participant) => {
-                    const draft = roleDrafts[participant.id] ?? { role: participant.role === 'owner' ? 'human' : participant.role, canInstruct: participant.canInstruct };
-                    const online = onlineIds.has(participant.id);
-                    return (
-                      <li className="participant-row" key={participant.id}>
-                        <div className="participant-identity">
-                          <span className={`presence-dot ${online ? 'online' : 'offline'}`} role="img" aria-label={`${participant.name} ${online ? 'online' : 'offline'}`} />
-                          <span className="avatar" aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                          <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}{chat.mutedIds.includes(participant.id) ? ' · muted' : ''}</span></div>
+                  {canSendChat ? (
+                    <form className="chat-form" aria-label="Send a live message" onSubmit={onSendChat}>
+                      {replyTarget && (
+                        <div className="reply-banner">
+                          <span>Replying to {replyTarget.from.name}: {replyTargetText.slice(0, 60)}</span>
+                          <button className="small-button" type="button" aria-label="Cancel reply" onClick={() => setReplyTarget(null)}>Cancel</button>
                         </div>
-                        {participant.id !== snapshot.self.id && (
-                          <button className="small-button" type="button" aria-pressed={mentionIds.includes(participant.id)} aria-label={`Mention ${participant.name}`} onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
-                        )}
-                        {canControl && participant.role !== 'owner' && participant.id !== snapshot.self.id && !(selfRole === 'moderator' && participant.role === 'moderator') && (
-                          <div className="participant-controls">
-                            {chat.mutedIds.includes(participant.id) ? (
-                              <button className="small-button" type="button" aria-label={`Unmute ${participant.name}`} onClick={() => chat.sendControl({ action: 'unmute', participantId: participant.id })}>Unmute</button>
-                            ) : (
-                              <button className="small-button" type="button" aria-label={`Mute ${participant.name}`} onClick={() => chat.sendControl({ action: 'mute', participantId: participant.id })}>Mute</button>
-                            )}
-                            {isOwner && <button className="small-button" type="button" aria-label={`Remove ${participant.name}`} onClick={() => chat.sendControl({ action: 'remove', participantId: participant.id })}>Remove</button>}
-                          </div>
-                        )}
-                        {isOwner && participant.role !== 'owner' && (
-                          <div className="role-controls">
-                            <label className="sr-only" htmlFor={`role-${participant.id}`}>Participant role for {participant.name}</label>
-                            <select id={`role-${participant.id}`} className="text-input compact-input" value={draft.role} onChange={(event) => updateRoleDraft(participant, { role: event.target.value as Exclude<ParticipantRole, 'owner'> })}>
-                              {participant.kind === 'human' && <><option value="human">Human</option><option value="moderator">Moderator</option></>}
-                              {participant.kind === 'agent' && <option value="agent">Agent</option>}
-                              <option value="observer">Observer</option>
-                            </select>
-                            {draft.role === 'moderator' && <label className="saved-check compact-check"><input type="checkbox" checked={draft.canInstruct} onChange={(event) => updateRoleDraft(participant, { canInstruct: event.target.checked })} /><span>Can instruct</span></label>}
-                            <button className="small-button" type="button" onClick={() => onSaveParticipant(participant)} disabled={busy} aria-label={`Save role for ${participant.name}`}>Save</button>
-                          </div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-
-              {isOwner && (
-                <div className="management-grid">
-                  <section className="panel-card" aria-labelledby="settings-heading">
-                    <div className="card-heading"><div><p className="eyebrow">Owner controls</p><h2 id="settings-heading">Room settings</h2></div></div>
-                    <form onSubmit={onSaveSettings}>
-                      <label className="field-label" htmlFor="room-name-setting">Room name</label>
-                      <input id="room-name-setting" className="text-input" aria-label="Room name setting" value={settingsName} onChange={(event) => setSettingsName(event.target.value)} required maxLength={80} />
-                      <label className="field-label" htmlFor="room-description-setting">Description</label>
-                      <textarea id="room-description-setting" className="text-input textarea" aria-label="Room description setting" value={settingsDescription} onChange={(event) => setSettingsDescription(event.target.value)} maxLength={500} rows={3} />
-                      <label className="field-label" htmlFor="room-mode-setting">Access mode</label>
-                      <select id="room-mode-setting" className="text-input" aria-label="Room access mode" value={settingsMode} onChange={(event) => setSettingsMode(event.target.value as RoomMode)}><option value="public">Public — access code or invite</option><option value="private">Private — invitation only</option><option value="hybrid">Hybrid — either credential</option></select>
-                      <label className="field-label" htmlFor="max-participants-setting">Maximum participants</label>
-                      <input id="max-participants-setting" className="text-input" type="number" min={snapshot.participants.length} max={100} value={settingsMaxParticipants} onChange={(event) => setSettingsMaxParticipants(event.target.value)} required />
-                      <label className="field-label" htmlFor="room-expiry-setting">Room expires</label>
-                      <input id="room-expiry-setting" className="text-input" type="datetime-local" aria-label="Room expiry" min={toDateTimeLocal(new Date().toISOString())} value={settingsExpiresAt} onChange={(event) => setSettingsExpiresAt(event.target.value)} required />
-                      <button className="primary-button" type="submit" disabled={busy}>Save room settings</button>
-                    </form>
-                  </section>
-
-                  <section className="panel-card" aria-labelledby="access-code-heading">
-                    <div className="card-heading"><div><p className="eyebrow">Credential control</p><h2 id="access-code-heading">Access code</h2></div></div>
-                    <p className="field-hint">{snapshot.room.accessCodeEnabled ? 'Enabled. Existing sessions are not affected by rotation.' : 'Disabled. Invitations remain available.'}</p>
-                    <form onSubmit={onRotateAccessCode}>
-                      <label className="field-label" htmlFor="new-access-code">New access code</label>
-                      <input id="new-access-code" className="text-input" type="password" autoComplete="new-password" minLength={12} maxLength={128} value={newAccessCode} onChange={(event) => setNewAccessCode(event.target.value)} required />
-                      <button className="primary-button" type="submit" disabled={busy}>Rotate access code</button>
-                    </form>
-                    {snapshot.room.accessCodeEnabled && <button className="danger-quiet" type="button" onClick={onDisableAccessCode} disabled={busy}>Disable access code</button>}
-                  </section>
-
-                  <section className="panel-card" aria-labelledby="invitation-heading">
-                    <div className="card-heading"><div><p className="eyebrow">One-time credential</p><h2 id="invitation-heading">Invite a participant</h2></div></div>
-                    <form onSubmit={onCreateInvitation}>
-                      <label className="field-label" htmlFor="invitation-role">Invitation role</label>
-                      <select id="invitation-role" className="text-input" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'human' | 'agent' | 'observer')}><option value="human">Human</option><option value="agent">Agent</option><option value="observer">Observer</option></select>
-                      <label className="field-label" htmlFor="invitation-name">Name (optional)</label>
-                      <input id="invitation-name" className="text-input" aria-label="Invitation name (optional)" value={inviteName} onChange={(event) => setInviteName(event.target.value)} maxLength={60} />
-                      <div className="split-fields">
-                        <div><label className="field-label" htmlFor="invitation-uses">Uses</label><input id="invitation-uses" className="text-input" type="number" min={1} max={100} value={inviteMaxUses} onChange={(event) => setInviteMaxUses(event.target.value)} required /></div>
-                        <div><label className="field-label" htmlFor="invitation-expiry">Expires in seconds</label><input id="invitation-expiry" className="text-input" type="number" min={1} max={86400} value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value)} required /></div>
+                      )}
+                      {mentionIds.length > 0 && (
+                        <p className="field-hint">Mentions: {mentionIds.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
+                      )}
+                      <label className="field-label sr-only" htmlFor="chat-message-text">Message</label>
+                      <div className="composer-row">
+                        <button className="composer-icon-button" type="button" aria-label="Attach" title="Attach">📎</button>
+                        <button className="composer-icon-button" type="button" aria-label="Emoji" title="Emoji">😊</button>
+                        <textarea id="chat-message-text" className="text-input textarea" rows={1} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Type a message" />
+                        <button className="send-button" type="submit" disabled={!chatText.trim()}>
+                          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.4l17.8-7.5c.8-.35.8-1.45 0-1.8L3.4 3.6c-.66-.29-1.39.2-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .72.73 1.2 1.39.91z" /></svg>
+                          <span className="send-label">Send message</span>
+                        </button>
                       </div>
-                      <button className="primary-button" type="submit" disabled={busy}>Create invitation</button>
+                      {isOwner && <button className="small-button" type="button" aria-pressed={broadcastMode} onClick={() => setBroadcastMode((value) => !value)} style={{ marginTop: '8px' }}>Broadcast</button>}
+                      {broadcastMode && isOwner && <p className="field-hint">Broadcast mode: the next send is an owner announcement, delivered even while the room is paused.</p>}
                     </form>
-                    {invitationToken && <div className="secret-result"><label className="field-label" htmlFor="invitation-token">Invitation token</label><input id="invitation-token" className="text-input secret-input" value={invitationToken} readOnly /><button className="small-button" type="button" onClick={() => setInvitationToken('')}>Hide invitation token</button></div>}
-                  </section>
-                </div>
-              )}
+                  ) : (
+                    chat.status === 'live' && <p className="field-hint">You are an observer in this room: live messages are readable, sending is disabled.</p>
+                  )}
+                </section>
 
-              <div className="room-footer-actions">
-                {!isOwner && <button className="secondary-button" type="button" onClick={onLeaveRoom} disabled={busy}>Leave room</button>}
-                {isOwner && <button className="danger-button" type="button" onClick={onDeleteRoom} disabled={busy}>Delete room</button>}
+                {showGroupInfo && (
+                  <aside className="tg-group-sidebar" aria-label="Group info and participants">
+                    <div className="group-info-header">
+                      <h3>Group Info</h3>
+                      <button className="small-button" type="button" onClick={() => setShowGroupInfo(false)}>✕ Close</button>
+                    </div>
+
+                    <div className="group-info-section">
+                      <p className="room-id">Room ID: {snapshot.room.id}</p>
+                      {snapshot.room.description && <p className="group-desc">{snapshot.room.description}</p>}
+                      <dl className="room-facts">
+                        <div><dt>Mode</dt><dd>{modeLabel(snapshot.room.mode)}</dd></div>
+                        <div><dt>Expires</dt><dd>{new Date(snapshot.room.expiresAt).toLocaleString()}</dd></div>
+                        <div><dt>Your Role</dt><dd>{snapshot.self.role}</dd></div>
+                      </dl>
+                    </div>
+
+                    {ownerKey && !keySaved && (
+                      <section className="secret-card" aria-labelledby="owner-key-heading">
+                        <p id="owner-key-heading" className="eyebrow">Owner key — shown once</p>
+                        <p>Keep this key safe. Needed to recover owner access.</p>
+                        <input className="text-input secret-input" value={ownerKey} readOnly />
+                        <button className="small-button" type="button" onClick={dismissOwnerKey}>I saved the owner key</button>
+                      </section>
+                    )}
+
+                    {isOwner && createdAccessCode && (
+                      <section className="secret-card" aria-labelledby="invite-link-heading">
+                        <p id="invite-link-heading" className="eyebrow">Invite link</p>
+                        <input className="text-input secret-input" value={inviteDisplayUrl ?? ''} readOnly />
+                        <button className="small-button" type="button" onClick={() => {
+                          if (!inviteDisplayUrl) return;
+                          navigator.clipboard.writeText(inviteDisplayUrl);
+                          setNotice('Invite link copied to clipboard.');
+                        }}>Copy invite link</button>
+                      </section>
+                    )}
+
+                    <section className="panel-card roster-card">
+                      <div className="card-heading">
+                        <div><p className="eyebrow">Members</p><h2>Participants ({snapshot.participants.length}/{snapshot.room.maxParticipants})</h2></div>
+                      </div>
+                      <ul className="participant-list">
+                        {snapshot.participants.map((participant) => {
+                          const draft = roleDrafts[participant.id] ?? { role: participant.role === 'owner' ? 'human' : participant.role, canInstruct: participant.canInstruct };
+                          const online = onlineIds.has(participant.id);
+                          return (
+                            <li className="participant-row" key={participant.id}>
+                              <div className="participant-identity">
+                                <span className={`presence-dot ${online ? 'online' : 'offline'}`} role="img" aria-label={`${participant.name} ${online ? 'online' : 'offline'}`} />
+                                <span className="avatar" aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                                <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}</span></div>
+                              </div>
+                              {participant.id !== snapshot.self.id && (
+                                <button className="small-button" type="button" onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
+                              )}
+                              {canControl && participant.role !== 'owner' && participant.id !== snapshot.self.id && !(selfRole === 'moderator' && participant.role === 'moderator') && (
+                                <div className="participant-controls">
+                                  {chat.mutedIds.includes(participant.id) ? (
+                                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'unmute', participantId: participant.id })}>Unmute</button>
+                                  ) : (
+                                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'mute', participantId: participant.id })}>Mute</button>
+                                  )}
+                                  {isOwner && <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'remove', participantId: participant.id })}>Remove</button>}
+                                </div>
+                              )}
+                              {isOwner && participant.role !== 'owner' && (
+                                <div className="role-controls">
+                                  <select className="text-input compact-input" value={draft.role} onChange={(event) => updateRoleDraft(participant, { role: event.target.value as Exclude<ParticipantRole, 'owner'> })}>
+                                    {participant.kind === 'human' && <><option value="human">Human</option><option value="moderator">Moderator</option></>}
+                                    {participant.kind === 'agent' && <option value="agent">Agent</option>}
+                                    <option value="observer">Observer</option>
+                                  </select>
+                                  {draft.role === 'moderator' && <label className="saved-check compact-check"><input type="checkbox" checked={draft.canInstruct} onChange={(event) => updateRoleDraft(participant, { canInstruct: event.target.checked })} /><span>Instruct</span></label>}
+                                  <button className="small-button" type="button" onClick={() => onSaveParticipant(participant)} disabled={busy}>Save</button>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+
+                    {isOwner && (
+                      <div className="management-stack">
+                        <section className="panel-card">
+                          <div className="card-heading"><div><p className="eyebrow">Owner</p><h2>Room Settings</h2></div></div>
+                          <form onSubmit={onSaveSettings}>
+                            <label className="field-label" htmlFor="room-name-setting">Room name</label>
+                            <input id="room-name-setting" className="text-input" value={settingsName} onChange={(event) => setSettingsName(event.target.value)} required maxLength={80} />
+                            <label className="field-label" htmlFor="room-description-setting">Description</label>
+                            <textarea id="room-description-setting" className="text-input textarea" value={settingsDescription} onChange={(event) => setSettingsDescription(event.target.value)} maxLength={500} rows={2} />
+                            <label className="field-label" htmlFor="room-mode-setting">Access mode</label>
+                            <select id="room-mode-setting" className="text-input" value={settingsMode} onChange={(event) => setSettingsMode(event.target.value as RoomMode)}><option value="public">Public</option><option value="private">Private</option><option value="hybrid">Hybrid</option></select>
+                            <button className="primary-button" type="submit" disabled={busy}>Save settings</button>
+                          </form>
+                        </section>
+
+                        <section className="panel-card">
+                          <div className="card-heading"><div><p className="eyebrow">Invite</p><h2>Create Invitation</h2></div></div>
+                          <form onSubmit={onCreateInvitation}>
+                            <label className="field-label" htmlFor="invitation-role">Role</label>
+                            <select id="invitation-role" className="text-input" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'human' | 'agent' | 'observer')}><option value="human">Human</option><option value="agent">Agent</option><option value="observer">Observer</option></select>
+                            <button className="primary-button" type="submit" disabled={busy}>Create Invite Token</button>
+                          </form>
+                          {invitationToken && <div className="secret-result"><input className="text-input secret-input" value={invitationToken} readOnly /><button className="small-button" type="button" onClick={() => setInvitationToken('')}>Hide</button></div>}
+                        </section>
+                      </div>
+                    )}
+                  </aside>
+                )}
               </div>
             </div>
           ) : (

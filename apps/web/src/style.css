@@ -198,6 +198,139 @@ textarea.text-input { resize: vertical; }
 .presence-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #535f58; box-shadow: 0 0 0 3px #535f5818; }
 .presence-dot.online { background: #69d5a5; box-shadow: 0 0 0 3px #69d5a51c; }
 
+/* Telegram-style Full Screen Group Chat Layout */
+.tg-room-layout {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #0b141a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tg-topbar {
+  height: 60px;
+  flex: 0 0 60px;
+  background: #202c33;
+  border-bottom: 1px solid #222d34;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tg-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tg-room-title {
+  margin: 0;
+  color: #e9edef;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tg-room-subtitle {
+  margin: 2px 0 0;
+  color: #8696a0;
+  font-size: 11px;
+}
+
+.tg-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.tg-workspace {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  overflow: hidden;
+}
+
+.tg-chat-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 24px;
+  overflow-y: auto;
+  background-color: #0b141a;
+  background-image: radial-gradient(rgba(255, 255, 255, .04) 1px, transparent 1.4px);
+  background-size: 24px 24px;
+}
+
+.tg-timeline {
+  flex: 1 1 auto;
+  height: auto !important;
+  max-height: none !important;
+  margin-bottom: 12px !important;
+}
+
+.tg-group-sidebar {
+  background: #111b21;
+  border-left: 1px solid #222d34;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.group-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #222d34;
+}
+
+.group-info-header h3 {
+  margin: 0;
+  color: #e9edef;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.group-info-section {
+  margin-bottom: 16px;
+}
+
+.group-desc {
+  margin: 6px 0 0;
+  color: #8696a0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.management-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .tg-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tg-group-sidebar {
+    position: absolute;
+    inset: 60px 0 0 0;
+    z-index: 50;
+  }
+}
+
 /* Stage 4 human controls */
 .control-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .pinned-panel { border: 1px solid var(--stroke); background: var(--surface-soft); border-radius: 12px; padding: 10px 12px; margin: 12px 0; }
