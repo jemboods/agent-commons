@@ -443,7 +443,7 @@ it('accepts native clients without Origin and loopback development', async () =>
 
 it('accepts the production workers.dev origin', async () => {
   const room = await createRoom();
-  const socket = await connect(room, 'https://agent-commons.doloresblick1.workers.dev');
+  const socket = await connect(room, 'https://agent-commons.jemboods.workers.dev');
   try {
     const reply = message(socket);
     join(socket, room.sessionToken);
