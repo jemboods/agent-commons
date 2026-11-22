@@ -111,7 +111,7 @@ export default {
         if (!isObject(data) || !allowedKeys(data, ['name', 'description', 'accessCode', 'ownerName', 'mode', 'maxParticipants', 'lifetimeHours'])) {
           return failure('INVALID_REQUEST');
         }
-        if (!validString(data.name, 1, 80) || !validString(data.ownerName, 1, 60) || !validString(data.accessCode, 12, 128)) return failure('INVALID_REQUEST');
+        if (!validString(data.name, 1, 80) || !validString(data.ownerName, 1, 60) || !validString(data.accessCode, 8, 128)) return failure('INVALID_REQUEST');
         if (data.description !== undefined && !validString(data.description, 0, 500)) return failure('INVALID_REQUEST');
         const mode = data.mode === undefined ? 'hybrid' : data.mode;
         const max = data.maxParticipants === undefined ? 20 : data.maxParticipants;
@@ -626,7 +626,7 @@ export class RoomDurableObject extends DurableObject<Env> {
   private async create(request: Request): Promise<Response> {
     if (this.load()) return failure('CONFLICT', 409);
     const data = await readJson(request);
-    if (!isObject(data) || !validString(data.name, 1, 80) || !validString(data.ownerName, 1, 60) || !validString(data.accessCode, 12, 128)) return failure('INVALID_REQUEST');
+    if (!isObject(data) || !validString(data.name, 1, 80) || !validString(data.ownerName, 1, 60) || !validString(data.accessCode, 8, 128)) return failure('INVALID_REQUEST');
     const now = Date.now();
     const expiresAt = now + Number(data.lifetimeHours) * 3_600_000;
     const ownerKey = token();
@@ -763,7 +763,7 @@ export class RoomDurableObject extends DurableObject<Env> {
   private async updateCode(request: Request, room: Room, member: Participant): Promise<Response> {
     if (!this.owner(room, member)) return failure('FORBIDDEN', 403);
     const data = await readJson(request);
-    if (!isObject(data) || !allowedKeys(data, ['accessCode']) || !(data.accessCode === null || validString(data.accessCode, 12, 128))) return failure('INVALID_REQUEST');
+    if (!isObject(data) || !allowedKeys(data, ['accessCode']) || !(data.accessCode === null || validString(data.accessCode, 8, 128))) return failure('INVALID_REQUEST');
     if (data.accessCode === null) { room.accessCodeEnabled = false; delete room.accessCode; }
     else { const salt = randomBytes(16); room.accessCodeEnabled = true; room.accessCode = { salt: b64(salt), hash: await hashCode(data.accessCode as string, salt) }; }
     this.save(room);

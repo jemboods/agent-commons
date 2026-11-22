@@ -71,7 +71,8 @@ export default function App() {
   const [connection, setConnection] = useState<Connection>('checking');
   const [roomName, setRoomName] = useState('');
   const [ownerName, setOwnerName] = useState('');
-  const [accessCode, setAccessCode] = useState('');
+  const [accessCodeMode, setAccessCodeMode] = useState<'generate' | 'custom'>('generate');
+  const [accessCode, setAccessCode] = useState(() => Math.random().toString(36).slice(2, 10));
   const [joinRoomId, setJoinRoomId] = useState('');
   const [joinName, setJoinName] = useState('');
   const [joinKind, setJoinKind] = useState<ParticipantKind>('human');
@@ -689,8 +690,12 @@ export default function App() {
                     <input id="room-name" className="text-input" value={roomName} onChange={(event) => setRoomName(event.target.value)} required maxLength={80} />
                     <label className="field-label" htmlFor="owner-name">Owner name</label>
                     <input id="owner-name" className="text-input" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} required maxLength={60} />
-                    <label className="field-label" htmlFor="access-code">Access code (at least 12 characters)</label>
-                    <input id="access-code" className="text-input" type="password" autoComplete="new-password" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} required minLength={12} maxLength={128} />
+                    <label className="field-label" htmlFor="access-code">Access code (8 characters)</label>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                      <button type="button" className="small-button" onClick={() => { setAccessCodeMode('generate'); setAccessCode(Math.random().toString(36).slice(2, 10)); }}>Generate new</button>
+                      <button type="button" className="small-button" onClick={() => setAccessCodeMode('custom')}>Custom</button>
+                    </div>
+                    <input id="access-code" className="text-input" type="text" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} required minLength={8} maxLength={128} readOnly={accessCodeMode === 'generate'} />
                     <p className="field-hint">The code lets people request access. It never grants owner rights.</p>
                     <button className="primary-button" type="submit" disabled={busy || connection !== 'connected'}>{busy ? 'Creating…' : 'Create room'}</button>
                   </form>
