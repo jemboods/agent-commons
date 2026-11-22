@@ -175,3 +175,12 @@ textarea.text-input { resize: vertical; }
 .reply-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; padding: 9px 11px; border: 1px solid #46604f; border-radius: 8px; background: #1a2420; color: #c3d7ca; font-size: 11px; overflow-wrap: anywhere; }
 .presence-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #535f58; box-shadow: 0 0 0 3px #535f5818; }
 .presence-dot.online { background: #69d5a5; box-shadow: 0 0 0 3px #69d5a51c; }
+
+/* Stage 4 human controls */
+.control-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.pinned-panel { border: 1px solid var(--stroke); background: var(--surface-soft); border-radius: 12px; padding: 10px 12px; margin: 12px 0; }
+.pinned-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.pinned-item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pinned-text { overflow-wrap: anywhere; }
+.broadcast-badge { color: var(--mint); font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+.participant-controls { display: flex; gap: 8px; }

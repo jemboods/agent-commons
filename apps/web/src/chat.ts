@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ParticipantKind } from './api';
+import type { ChatState, InterruptView, ParticipantKind, PinView } from './api';
 
 export type ChatMessage = {
   id: string;
@@ -8,9 +8,10 @@ export type ChatMessage = {
   text: string;
   replyTo?: string;
   mentions?: string[];
+  broadcast?: boolean;
 };
 export type ChatStatus = 'idle' | 'connecting' | 'live' | 'closed';
-export type ChatErrorCode = 'FORBIDDEN' | 'RATE_LIMITED' | 'UNAUTHORIZED' | 'INVALID_MESSAGE' | 'SOCKET_ERROR';
+export type ChatErrorCode = 'FORBIDDEN' | 'RATE_LIMITED' | 'ROOM_PAUSED' | 'ROOM_INTERRUPTED' | 'MUTED' | 'UNAUTHORIZED' | 'INVALID_MESSAGE' | 'SOCKET_ERROR';
 
 const MAX_LIVE_MESSAGES = 200;
 const TYPING_FRAME_MS = 2_000;
@@ -30,6 +31,10 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [online, setOnline] = useState<Record<string, boolean>>({});
   const [typing, setTyping] = useState<Record<string, number>>({});
+  const [chatState, setChatState] = useState<ChatState>('active');
+  const [pins, setPins] = useState<PinView[]>([]);
+  const [mutedIds, setMutedIds] = useState<string[]>([]);
+  const [interrupt, setInterrupt] = useState<InterruptView | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<ChatStatus>('idle');
   const lastTypingRef = useRef(0);
@@ -44,6 +49,10 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
     setMessages([]);
     setOnline({});
     setTyping({});
+    setChatState('active');
+    setPins([]);
+    setMutedIds([]);
+    setInterrupt(null);
     setError(null);
     setCloseReason('');
     updateStatus('connecting');
@@ -64,10 +73,21 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
       let event: Record<string, unknown>;
       try { event = JSON.parse(String(messageEvent.data)) as Record<string, unknown>; } catch { return; }
       if (event.type === 'welcome') {
-        const payload = event.payload as { participants?: { id: string; online?: boolean }[] };
+        const payload = event.payload as {
+          participants?: { id: string; online?: boolean; muted?: boolean }[];
+          room?: { chatState?: ChatState; interrupt?: InterruptView | null; pins?: PinView[] };
+        };
         const next: Record<string, boolean> = {};
-        for (const participant of payload.participants ?? []) next[participant.id] = participant.online === true;
+        const muted: string[] = [];
+        for (const participant of payload.participants ?? []) {
+          next[participant.id] = participant.online === true;
+          if (participant.muted === true) muted.push(participant.id);
+        }
         setOnline(next);
+        setMutedIds(muted);
+        setChatState(payload.room?.chatState ?? 'active');
+        setInterrupt(payload.room?.interrupt ?? null);
+        setPins(payload.room?.pins ?? []);
         setError(null);
         updateStatus('live');
         return;
@@ -80,6 +100,7 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
           text: String((event.payload as { text?: unknown }).text ?? ''),
           replyTo: (event.payload as { replyTo?: string }).replyTo,
           mentions: (event.payload as { mentions?: string[] }).mentions,
+          broadcast: (event.payload as { broadcast?: boolean }).broadcast === true ? true : undefined,
         };
         setMessages((current) => [...current, incoming].slice(-MAX_LIVE_MESSAGES));
         return;
@@ -94,9 +115,22 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
         setTyping((current) => ({ ...current, [from.id]: Date.now() + TYPING_VISIBLE_MS }));
         return;
       }
+      if (event.type === 'state') {
+        const payload = event.payload as { chatState: ChatState; muted?: string[]; pins?: PinView[] };
+        setChatState(payload.chatState);
+        setMutedIds(payload.muted ?? []);
+        setPins(payload.pins ?? []);
+        setInterrupt((current) => (payload.chatState === 'active' && current?.mode === 'hard' ? null : current));
+        return;
+      }
+      if (event.type === 'interrupt') {
+        const payload = event.payload as { interruptId: string; mode: 'soft' | 'hard'; by: string };
+        setInterrupt({ id: payload.interruptId, mode: payload.mode, by: payload.by, ts: String(event.ts), acks: [] });
+        return;
+      }
       if (event.type === 'error') {
         const code = (event.payload as { code?: string }).code;
-        if (code === 'FORBIDDEN' || code === 'RATE_LIMITED') setError(code);
+        if (code === 'FORBIDDEN' || code === 'RATE_LIMITED' || code === 'ROOM_PAUSED' || code === 'ROOM_INTERRUPTED' || code === 'MUTED') setError(code);
         return;
       }
     });
@@ -157,7 +191,14 @@ export function useRoomChat({ roomId, sessionToken, active }: ChatOptions) {
     socket.send(JSON.stringify({ v: 1, type: 'typing', payload: {} }));
   }, []);
 
-  return { status, error, closeReason, messages, online, typing, send, notifyTyping, reconnect: connect };
+  const sendControl = useCallback((payload: Record<string, unknown>) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || statusRef.current !== 'live') return false;
+    socket.send(JSON.stringify({ v: 1, type: 'control', payload }));
+    return true;
+  }, []);
+
+  return { status, error, closeReason, messages, online, typing, chatState, pins, mutedIds, interrupt, send, sendControl, notifyTyping, reconnect: connect };
 }
 
 function messageCount(record: Record<string, number>): number {

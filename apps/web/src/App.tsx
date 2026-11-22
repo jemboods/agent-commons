@@ -59,6 +59,9 @@ function chatStatusLabel(status: ChatStatus): string {
 function chatErrorText(code: ChatErrorCode): string {
   if (code === 'FORBIDDEN') return 'You cannot send messages with your current role.';
   if (code === 'RATE_LIMITED') return 'Slow down: the room is rate limiting your messages.';
+  if (code === 'ROOM_PAUSED') return 'The room is paused. Only the owner and moderators can send right now.';
+  if (code === 'ROOM_INTERRUPTED') return 'Agents are interrupted. Agent messages stay blocked until the owner resumes.';
+  if (code === 'MUTED') return 'You are muted in this room, so your message was not sent.';
   if (code === 'UNAUTHORIZED') return 'Your live session is no longer authorized.';
   if (code === 'SOCKET_ERROR') return 'The live connection failed. Reconnect when you are ready.';
   return 'The server rejected that frame. Nothing was sent.';
@@ -97,6 +100,7 @@ export default function App() {
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
   const [chatText, setChatText] = useState('');
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [broadcastMode, setBroadcastMode] = useState(false);
   const [mentionIds, setMentionIds] = useState<string[]>([]);
   const chat = useRoomChat({
     roomId: session?.room.id ?? '',
@@ -394,6 +398,16 @@ export default function App() {
   function onSendChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!chatText.trim()) return;
+    if (broadcastMode && isOwner) {
+      if (!chat.sendControl({ action: 'broadcast', text: chatText })) {
+        setNotice('');
+        setError('The live connection is not ready, so the broadcast was not sent. Nothing is retried automatically.');
+        return;
+      }
+      setChatText('');
+      setBroadcastMode(false);
+      return;
+    }
     const sent = chat.send(chatText, {
       ...(replyTarget ? { replyTo: replyTarget.id } : {}),
       mentions: mentionIds,
@@ -422,6 +436,11 @@ export default function App() {
       .map((participant) => participant.name)
     : [];
   const canSendChat = chat.status === 'live' && snapshot?.self.role !== 'observer';
+  const selfRole = snapshot?.self.role;
+  const canControl = selfRole === 'owner' || selfRole === 'moderator';
+  const interruptByName = chat.interrupt
+    ? snapshot?.participants.find((participant) => participant.id === chat.interrupt?.by)?.name ?? 'the owner'
+    : '';
   const replyTargetText = replyTarget
     ? chat.messages.find((message) => message.id === replyTarget.id)?.text ?? replyTarget.text
     : '';
@@ -444,7 +463,7 @@ export default function App() {
         <aside className="sidebar" aria-label="Room actions">
           <p className="eyebrow">Workspace</p>
           <p className="sidebar-note">Create a room or join one with a room ID and a credential.</p>
-          <div className="sidebar-foot">Stage 3 · Live chat</div>
+          <div className="sidebar-foot">Stage 4 · Human controls</div>
         </aside>
 
         <section className="main-panel">
@@ -480,6 +499,34 @@ export default function App() {
                   <span className={`chat-status ${chat.status}`} data-chat-status={chat.status}>{chatStatusLabel(chat.status)}</span>
                 </div>
                 {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
+                {chat.chatState === 'paused' && <p className="notice" role="status">Room paused by the owner. Sending is limited to the owner and moderators.</p>}
+                {chat.chatState === 'interrupted' && <p className="notice" role="status">Agents interrupted by the owner. Agent messages are blocked until the owner resumes the room.</p>}
+                {chat.interrupt && chat.chatState === 'active' && <p className="field-hint">Soft interrupt sent by {interruptByName}. Agents were notified; chat continues.</p>}
+                {isOwner && chat.status === 'live' && (
+                  <div className="control-row" aria-label="Room controls">
+                    {chat.chatState === 'active' ? (
+                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'pause' })}>Pause room</button>
+                    ) : (
+                      <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'resume' })}>Resume room</button>
+                    )}
+                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'soft' })}>Interrupt agents (soft)</button>
+                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'interrupt', mode: 'hard' })}>Interrupt agents (hard)</button>
+                  </div>
+                )}
+                {chat.pins.length > 0 && (
+                  <section className="pinned-panel" aria-label="Pinned messages">
+                    <p className="eyebrow">Pinned messages</p>
+                    <ul className="pinned-list">
+                      {chat.pins.map((pin) => (
+                        <li key={pin.messageId} className="pinned-item">
+                          <strong>{pin.from.name}</strong>
+                          <span className="pinned-text">{pin.text}</span>
+                          {canControl && <button className="small-button" type="button" aria-label={`Unpin message from ${pin.from.name}`} onClick={() => chat.sendControl({ action: 'unpin', messageId: pin.messageId })}>Unpin</button>}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
                 <p className="field-hint">Messages exist only while connections are live. Nothing is stored, replayed, or retried after a reconnect.</p>
                 {chat.status === 'closed' && (
                   <div className="chat-reconnect">
@@ -496,6 +543,7 @@ export default function App() {
                         <div className="timeline-meta">
                           <strong>{message.from.name}</strong>
                           <span>{message.from.kind}</span>
+                          {message.broadcast && <span className="broadcast-badge">Broadcast</span>}
                           <time dateTime={message.ts}>{new Date(message.ts).toLocaleTimeString()}</time>
                         </div>
                         {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
@@ -504,6 +552,7 @@ export default function App() {
                           <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
                         )}
                         <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
+                        {canControl && <button className="small-button" type="button" aria-label={`Pin message from ${message.from.name}`} onClick={() => chat.sendControl({ action: 'pin', messageId: message.id, text: message.text })}>Pin</button>}
                       </li>
                     );
                   })}
@@ -522,6 +571,8 @@ export default function App() {
                     )}
                     <label className="field-label" htmlFor="chat-message-text">Message</label>
                     <textarea id="chat-message-text" className="text-input textarea" rows={3} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} placeholder="Plain text only. Markdown and links stay inert." />
+                    {isOwner && <button className="small-button" type="button" aria-pressed={broadcastMode} onClick={() => setBroadcastMode((value) => !value)}>Broadcast</button>}
+                    {broadcastMode && isOwner && <p className="field-hint">Broadcast mode: the next send is an owner announcement, delivered even while the room is paused.</p>}
                     <button className="primary-button" type="submit" disabled={!chatText.trim()}>Send message</button>
                   </form>
                 ) : (
@@ -541,10 +592,20 @@ export default function App() {
                         <div className="participant-identity">
                           <span className={`presence-dot ${online ? 'online' : 'offline'}`} role="img" aria-label={`${participant.name} ${online ? 'online' : 'offline'}`} />
                           <span className="avatar" aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                          <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}</span></div>
+                          <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}{chat.mutedIds.includes(participant.id) ? ' · muted' : ''}</span></div>
                         </div>
                         {participant.id !== snapshot.self.id && (
                           <button className="small-button" type="button" aria-pressed={mentionIds.includes(participant.id)} aria-label={`Mention ${participant.name}`} onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
+                        )}
+                        {canControl && participant.role !== 'owner' && participant.id !== snapshot.self.id && !(selfRole === 'moderator' && participant.role === 'moderator') && (
+                          <div className="participant-controls">
+                            {chat.mutedIds.includes(participant.id) ? (
+                              <button className="small-button" type="button" aria-label={`Unmute ${participant.name}`} onClick={() => chat.sendControl({ action: 'unmute', participantId: participant.id })}>Unmute</button>
+                            ) : (
+                              <button className="small-button" type="button" aria-label={`Mute ${participant.name}`} onClick={() => chat.sendControl({ action: 'mute', participantId: participant.id })}>Mute</button>
+                            )}
+                            {isOwner && <button className="small-button" type="button" aria-label={`Remove ${participant.name}`} onClick={() => chat.sendControl({ action: 'remove', participantId: participant.id })}>Remove</button>}
+                          </div>
                         )}
                         {isOwner && participant.role !== 'owner' && (
                           <div className="role-controls">

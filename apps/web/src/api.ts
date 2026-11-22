@@ -1,6 +1,23 @@
 export type RoomMode = 'public' | 'private' | 'hybrid';
 export type ParticipantKind = 'human' | 'agent';
 export type ParticipantRole = 'owner' | 'moderator' | 'human' | 'agent' | 'observer';
+export type ChatState = 'active' | 'paused' | 'interrupted';
+
+export interface InterruptView {
+  id: string;
+  mode: 'soft' | 'hard';
+  by: string;
+  ts: string;
+  acks: string[];
+}
+
+export interface PinView {
+  messageId: string;
+  text: string;
+  from: { id: string; name: string; kind: ParticipantKind };
+  pinnedBy: string;
+  ts: string;
+}
 
 export interface RoomView {
   id: string;
@@ -11,6 +28,9 @@ export interface RoomView {
   createdAt: string;
   expiresAt: string;
   accessCodeEnabled: boolean;
+  chatState: ChatState;
+  interrupt: InterruptView | null;
+  pins: PinView[];
 }
 
 export interface Participant {
@@ -20,6 +40,7 @@ export interface Participant {
   role: ParticipantRole;
   joinedAt: string;
   canInstruct: boolean;
+  muted: boolean;
 }
 
 export interface CreateRoomInput {
