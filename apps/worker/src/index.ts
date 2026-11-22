@@ -5,7 +5,7 @@ const HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
 };
-const PBKDF2_ITERATIONS = 600_000;
+const PBKDF2_ITERATIONS = 100_000; // Cloudflare WebCrypto rejects PBKDF2 above 100,000 iterations (NotSupportedError in production).
 const SESSION_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 16 * 1024;
 const ROOM_REQUESTS_PER_MINUTE = 120;
