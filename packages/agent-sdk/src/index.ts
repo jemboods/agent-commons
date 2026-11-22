@@ -11,11 +11,11 @@ export type AgentOptions = {
 export class AgentCommons {
   private ws: WebSocket | null = null;
   private listeners: {
-    message: ((m: any) => void)[];
+    message: ((m: Record<string, unknown>) => void)[];
     instruction: ((t: InstructionTask) => void)[];
     interrupt: ((e: InterruptEvent) => void)[];
-    state: ((s: any) => void)[];
-    error: ((err: any) => void)[];
+    state: ((s: Record<string, unknown>) => void)[];
+    error: ((err: unknown) => void)[];
   } = {
     message: [],
     instruction: [],
@@ -94,7 +94,13 @@ export class AgentCommons {
     });
   }
 
-  on(event: 'message' | 'instruction' | 'interrupt' | 'state' | 'error', callback: (...args: any[]) => void): void {
+  on(event: 'message', callback: (m: Record<string, unknown>) => void): void;
+  on(event: 'instruction', callback: (t: InstructionTask) => void): void;
+  on(event: 'interrupt', callback: (e: InterruptEvent) => void): void;
+  on(event: 'state', callback: (s: Record<string, unknown>) => void): void;
+  on(event: 'error', callback: (err: unknown) => void): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: 'message' | 'instruction' | 'interrupt' | 'state' | 'error', callback: (arg: any) => void): void {
     if (this.listeners[event]) {
       this.listeners[event].push(callback);
     }

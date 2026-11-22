@@ -7,7 +7,8 @@ The owner authorized implementation of all remaining MVP stages and asked for au
 - Done: 4 Human controls (`f1b0e0b`, CI run `44988401297`). See `docs/stage-4.md`.
 - Done: 5 Agent integration (`cc536c8`). See `docs/stage-5.md`.
 - Done: 6 Temporary storage and manual export. See `docs/stage-6.md`.
-- Active: 7 Final review and release preparation.
+- Done: 7 Final review and release preparation. See `docs/stage-7.md`.
+- Active: None (MVP release preparation complete and verified).
 - Still separately gated: production deployment (Worker **and** Pages), GitHub backup, direct media/R2 upload, paid services/billing and additions outside the agreed stack. SQLite in the room Durable Object was already approved. Do not treat optional features or deployment as part of this authorization. No automatic backups.
 
 ## Ready to launch
