@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ApiError,
   checkHealth,
@@ -120,6 +120,27 @@ export default function App() {
       .catch(() => { if (!controller.signal.aborted) setConnection('unavailable'); });
     return () => controller.abort();
   }, []);
+
+  // Presence can reveal a participant who joined after this page's snapshot
+  // was taken. Resync the roster quietly, once per unknown set, so their
+  // presence, typing, and mention controls appear without a manual refresh.
+  const rosterSyncRef = useRef('');
+  useEffect(() => {
+    if (!session || !snapshot) return;
+    const known = new Set(snapshot.participants.map((participant) => participant.id));
+    const unknown = Object.entries(chat.online)
+      .filter(([id, online]) => online && !known.has(id))
+      .map(([id]) => id)
+      .sort()
+      .join(',');
+    if (!unknown || rosterSyncRef.current === unknown) return;
+    rosterSyncRef.current = unknown;
+    let cancelled = false;
+    getRoom(session.room.id, session.sessionToken)
+      .then((next) => { if (!cancelled) applySnapshot(next); })
+      .catch(() => { /* roster stays stale until a manual refresh */ });
+    return () => { cancelled = true; };
+  }, [chat.online, session, snapshot]);
 
   function clearMessages() {
     setError('');
