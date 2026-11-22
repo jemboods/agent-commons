@@ -30,24 +30,24 @@ test('relays live chat, replies, mentions, typing and presence between two brows
   await joinAsGuest(guest, roomId, 'Aster');
   await expect(page.getByLabel('Aster online')).toBeVisible();
 
-  await page.getByLabel('Message').fill('Halo dari owner');
+  await page.getByLabel('Message', { exact: true }).fill('Halo dari owner');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(guest.getByText('Halo dari owner')).toBeVisible();
   await expect(page.getByText('Halo dari owner')).toBeVisible();
 
   await guest.getByRole('button', { name: 'Reply to message from Rina' }).click();
-  await guest.getByLabel('Message').fill('Balasan untuk owner');
+  await guest.getByLabel('Message', { exact: true }).fill('Balasan untuk owner');
   await guest.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByText('Balasan untuk owner')).toBeVisible();
   await expect(page.getByText('Replying to Rina: Halo dari owner')).toBeVisible();
 
   await page.getByRole('button', { name: 'Mention Aster' }).click();
-  await page.getByLabel('Message').fill('Cek ini, Aster');
+  await page.getByLabel('Message', { exact: true }).fill('Cek ini, Aster');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(guest.getByText('Cek ini, Aster')).toBeVisible();
   await expect(guest.getByText('Mentions: Aster')).toBeVisible();
 
-  await guest.getByLabel('Message').fill('sedang menulis');
+  await guest.getByLabel('Message', { exact: true }).fill('sedang menulis');
   await expect(page.getByText(/Aster is typing/)).toBeVisible();
 
   await guest.close();
@@ -67,7 +67,7 @@ test('rejects a browser send after the participant becomes an observer', async (
   await page.getByRole('button', { name: 'Save role for Bima' }).click();
   await expect(page.getByText('Bima · observer')).toBeVisible();
 
-  await guest.getByLabel('Message').fill('Mencoba mengirim sebagai observer');
+  await guest.getByLabel('Message', { exact: true }).fill('Mencoba mengirim sebagai observer');
   await guest.getByRole('button', { name: 'Send message' }).click();
   await expect(guest.getByText('You cannot send messages with your current role.')).toBeVisible();
   await expect(page.getByText('Mencoba mengirim sebagai observer')).toHaveCount(0);
