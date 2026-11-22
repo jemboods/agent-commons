@@ -145,7 +145,9 @@ export default function App() {
           setCredentialType('invitation');
           setJoinCredential(decoded.i);
         }
-      } catch {}
+      } catch {
+        // A malformed invite payload in the URL is ignored; the join form stays empty.
+      }
     } else {
       if (room) setJoinRoomId(room);
       if (code) {
