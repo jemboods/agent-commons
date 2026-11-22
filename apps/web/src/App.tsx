@@ -9,7 +9,6 @@ import {
   joinRoom,
   leaveRoom,
   recoverOwner,
-  updateAccessCode,
   updateParticipant,
   updateRoom,
   type CreateRoomResponse,
@@ -20,7 +19,7 @@ import {
   type RoomSnapshot,
   type SessionResponse,
 } from './api';
-import { useRoomChat, type ChatErrorCode, type ChatMessage, type ChatStatus } from './chat';
+import { useRoomChat, type ChatErrorCode, type ChatMessage } from './chat';
 
 type Connection = 'checking' | 'connected' | 'unavailable';
 type CredentialType = 'access-code' | 'invitation';
@@ -92,13 +91,6 @@ function modeLabel(mode: RoomMode): string {
   return mode[0].toUpperCase() + mode.slice(1);
 }
 
-function chatStatusLabel(status: ChatStatus): string {
-  if (status === 'live') return 'Live chat connected';
-  if (status === 'connecting') return 'Connecting live chat…';
-  if (status === 'closed') return 'Live chat disconnected';
-  return 'Live chat idle';
-}
-
 function chatErrorText(code: ChatErrorCode): string {
   if (code === 'FORBIDDEN') return 'You cannot send messages with your current role.';
   if (code === 'RATE_LIMITED') return 'Slow down: the room is rate limiting your messages.';
@@ -137,11 +129,10 @@ export default function App() {
   const [settingsMode, setSettingsMode] = useState<RoomMode>('hybrid');
   const [settingsMaxParticipants, setSettingsMaxParticipants] = useState('20');
   const [settingsExpiresAt, setSettingsExpiresAt] = useState('');
-  const [newAccessCode, setNewAccessCode] = useState('');
   const [inviteRole, setInviteRole] = useState<'human' | 'agent' | 'observer'>('human');
   const [inviteName, setInviteName] = useState('');
-  const [inviteMaxUses, setInviteMaxUses] = useState('1');
-  const [inviteExpiry, setInviteExpiry] = useState('3600');
+  const [inviteMaxUses] = useState('1');
+  const [inviteExpiry] = useState('3600');
   const [invitationToken, setInvitationToken] = useState('');
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
   const [chatText, setChatText] = useState('');
@@ -336,38 +327,6 @@ export default function App() {
       });
       if (snapshot) applySnapshot({ ...snapshot, room: result.room });
       setNotice('Room settings saved.');
-    } catch (requestError) {
-      showError(requestError);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onRotateAccessCode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) return;
-    clearMessages();
-    setBusy(true);
-    try {
-      await updateAccessCode(session.room.id, session.sessionToken, newAccessCode);
-      setNewAccessCode('');
-      setNotice('Access code updated.');
-      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: true } });
-    } catch (requestError) {
-      showError(requestError);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onDisableAccessCode() {
-    if (!session) return;
-    clearMessages();
-    setBusy(true);
-    try {
-      await updateAccessCode(session.room.id, session.sessionToken, null);
-      setNotice('Access code disabled.');
-      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: false } });
     } catch (requestError) {
       showError(requestError);
     } finally {
