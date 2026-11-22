@@ -1,6 +1,6 @@
-# API — Room dan awal Tahap 3 (WebSocket)
+# API — Room, WebSocket, dan kontrol manusia
 
-Room memakai HTTP dan Durable Object SQLite-backed. Tahap 3 menyediakan autentikasi WebSocket hibernatable, welcome, fan-out chat teks live, presence, dan typing efemeral di backend serta integrasi chat live di browser. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
+Room memakai HTTP dan Durable Object SQLite-backed. Tahap 3 menyediakan autentikasi WebSocket hibernatable, welcome, fan-out chat teks live, presence, dan typing efemeral di backend serta integrasi chat live di browser. Tahap 4 menambah kontrol manusia: pause/resume, interrupt agent, mute, remove, broadcast, dan pin. Belum ada SDK, backup, model call, atau deployment. Worker dev dijalankan loopback.
 
 ## Perilaku umum
 
@@ -105,6 +105,41 @@ Payload harus objek kosong; field tambahan (termasuk teks) ditutup 1008 `INVALID
 
 Batas laju: satu frame typing per peserta per jendela 2 detik, dibagi seluruh socket/session peserta; frame berlebih dibuang diam-diam tanpa menutup koneksi dan tanpa event error. Observer tidak dapat mengirim typing maupun pesan; frame typing observer diabaikan dan koneksinya tetap terbuka untuk membaca. Tidak ada isi, timestamp, atau status typing yang disimpan di state room — hanya entri budget laju tanpa konten.
 
+## Kontrol manusia — Tahap 4
+
+Room membawa `chatState` persisten (`active | paused | interrupted`), record `interrupt` yang sedang live atau `null`, daftar `pins`, dan flag `muted` per peserta; semuanya tampil di snapshot HTTP dan welcome.
+
+Kontrol dikirim sebagai frame teks v1 setelah join dan diotorisasi ulang dari role terkini pengirim pada setiap frame:
+
+```text
+{v:1, type:"control", payload:{action:"pause" | "resume"}}
+{v:1, type:"control", payload:{action:"mute" | "unmute" | "remove", participantId:"p_…"}}
+{v:1, type:"control", payload:{action:"interrupt", mode:"soft" | "hard"}}
+{v:1, type:"control", payload:{action:"broadcast", text:"…"}}
+{v:1, type:"control", payload:{action:"pin", messageId:"msg_…", text:"…"}}
+{v:1, type:"control", payload:{action:"unpin", messageId:"msg_…"}}
+```
+
+| Aksi | Owner | Moderator |
+| --- | --- | --- |
+| pause, resume, interrupt, broadcast, remove | ya | tidak |
+| mute, unmute, pin, unpin | ya | ya, dengan batas target |
+
+Owner tidak dapat dibisukan, dikeluarkan, atau menjadi target dirinya sendiri; moderator tidak dapat menarget owner atau moderator lain, dan tidak dapat melepas pin milik owner. Frame dengan field asing atau bentuk rusak ditutup 1008 `INVALID_MESSAGE`; aksi yang bentuknya sah tetapi tidak diizinkan membalas event `error` `FORBIDDEN` hanya ke pengirim.
+
+Setiap perubahan state disiarkan ke semua socket terautentikasi:
+
+```text
+{v:1, id:"evt_…", room:"r_…", type:"state", ts:"<ISO timestamp>",
+ payload:{chatState:"active|paused|interrupted", muted:["p_…"], pins:[{messageId:"msg_…", text:"…", from:{id:"p_…", name:"…", kind:"human|agent"}, pinnedBy:"p_…", ts:"<ISO timestamp>"}]}}
+{v:1, id:"evt_…", room:"r_…", type:"interrupt", ts:"<ISO timestamp>",
+ payload:{interruptId:"int_…", mode:"soft|hard", by:"p_…"}}
+```
+
+Enforcement: peserta yang dibisukan ditolak `MUTED`; saat `paused`, pengirim selain owner/moderator ditolak `ROOM_PAUSED` dan typing dibuang diam-diam; saat `interrupted` (interrupt hard), pengirim berkind agent ditolak `ROOM_INTERRUPTED` sampai `resume`, manusia tidak terpengaruh. Interrupt memblokir pengiriman pesan agent ke room, bukan proses internal agent. Agent mengonfirmasi interrupt dengan `{v:1, type:"interrupt_ack", payload:{interruptId:"int_…"}}`; ack dicatat sekali per agent pada record interrupt dan tampil di snapshot.
+
+`remove` mencabut session target, menghapusnya dari roster, menutup socketnya `UNAUTHORIZED`, dan menyiarkan presence offline; remove bukan ban. `broadcast` adalah event `message` biasa dengan `payload.broadcast: true`, melewati budget chat dan registry reply yang sama, dan tetap terkirim saat room paused/interrupted. Pin maksimum 10 per room; teks pin maksimum 2.000 karakter disuplai pemin, sedangkan atribusi `from` disalin server dari snapshot pengirim pada registry reply (TTL 15 menit), sehingga pesan yang sudah keluar dari registry tidak dapat dipin dan atribusi tidak dapat dipalsukan.
+
 ## Batas tahap dan verifikasi
 
-Belum ada chat browser, browser-to-backend acceptance, instruksi, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser room berada di `tests/e2e/rooms.spec.ts` dan hanya dijalankan melalui GitHub Actions pada box kecil. Tahap 3 belum selesai; status checkpoint ada di `docs/stage-3.md`.
+Belum ada instruksi/evidence agent, agent SDK, export/backup, media upload, atau deployment produksi. Tes terfokus Worker berada di `apps/worker/test/rooms.test.ts` dan `apps/worker/test/websocket.test.ts`; alur browser berada di `tests/e2e/` dan hanya dijalankan melalui GitHub Actions pada box kecil. Status checkpoint Tahap 4 ada di `docs/stage-4.md`.
