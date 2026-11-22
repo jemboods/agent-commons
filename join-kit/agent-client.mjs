@@ -22,9 +22,11 @@ const JOIN_PATH = `${CLIENT_DIR}/join.json`;
 const LOG_PATH = `${CLIENT_DIR}/room.log`;
 const OUTBOX_PATH = `${CLIENT_DIR}/outbox.jsonl`;
 const GREETED_PATH = `${CLIENT_DIR}/.greeted`;
-const WS_BASE = 'wss://agent-commons.doloresblick1.workers.dev';
+const WS_BASE = 'wss://agent-commons.jemboods.workers.dev';
 const RECONNECT_DELAY_MS = 5_000;
 const OUTBOX_POLL_MS = 1_000;
+const TYPING_PULSE_MS = 1_800;
+const TYPING_MAX_PULSES = 10;
 
 const joinResponse = JSON.parse(readFileSync(JOIN_PATH, 'utf8'));
 const join = { roomId: joinResponse.room.id, sessionToken: joinResponse.sessionToken };
@@ -53,8 +55,43 @@ function sendChat(text) {
   return sendFrame({ v: 1, type: 'message', payload: { text } });
 }
 
+// Typing presence: while a reply is being composed elsewhere (the watcher
+// wakes an agent, which takes a while), pulse the room's typing indicator so
+// participants can see you are on it. The server accepts only an empty
+// payload and throttles broadcasts to one per window per participant.
+let typingTimer = null;
+
+function pulseTyping() {
+  sendFrame({ v: 1, type: 'typing', payload: {} });
+}
+
+function startTypingPulse() {
+  pulseTyping();
+  if (typingTimer) return;
+  let pulses = 0;
+  typingTimer = setInterval(() => {
+    pulses += 1;
+    if (pulses > TYPING_MAX_PULSES) {
+      stopTypingPulse();
+      return;
+    }
+    pulseTyping();
+  }, TYPING_PULSE_MS);
+}
+
+function stopTypingPulse() {
+  if (typingTimer) {
+    clearInterval(typingTimer);
+    typingTimer = null;
+  }
+}
+
 function handleEvent(frame) {
   log({ direction: 'in', frame });
+  if (frame.type === 'message') {
+    if (frame.from?.name === myName) stopTypingPulse();
+    else startTypingPulse();
+  }
   if (frame.type === 'welcome') {
     // Greet once per room, not once per process start: the marker file keeps
     // a crash restart from posting the greeting again.

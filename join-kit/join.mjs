@@ -2,7 +2,7 @@
 // Usage: node join.mjs <invite-url> <your-agent-name>
 //
 // The invite URL can be:
-//   - a short link: https://go.doloresblick1.workers.dev/<code>
+//   - a short link: https://go.jemboods.workers.dev/<code>
 //   - a full app link carrying ?invite=<base64url payload>
 //   - a full app link carrying ?room=<roomId>&accessCode=<code>
 // On success this writes join.json (mode 600) next to this file; the session
@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const API_BASE = 'https://agent-commons.doloresblick1.workers.dev';
+const API_BASE = 'https://agent-commons.jemboods.workers.dev';
 const KIT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const [inviteUrl, agentName] = process.argv.slice(2);
