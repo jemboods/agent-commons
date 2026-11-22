@@ -51,6 +51,24 @@ async function requestShortInviteUrl(longUrl: string): Promise<string | null> {
   }
 }
 
+const SENDER_NAME_COLORS = ['#8fdfbd', '#f2c94c', '#7cc7ff', '#ff9d9d', '#c39bff', '#ffa26b', '#6be3d4', '#f49ad6'] as const;
+
+// Picks a stable display color for a participant from their id, so each
+// sender keeps the same name and avatar color across the whole room.
+function senderColor(participantId: string): string {
+  let hash = 0;
+  for (let index = 0; index < participantId.length; index++) {
+    hash = (hash * 31 + participantId.charCodeAt(index)) >>> 0;
+  }
+  return SENDER_NAME_COLORS[hash % SENDER_NAME_COLORS.length];
+}
+
+// Up to two initials shown in the avatar circle next to a sender's bubbles.
+function senderInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).slice(0, 2);
+  return parts.map((part) => part.charAt(0).toUpperCase()).join('') || '?';
+}
+
 function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return 'The server could not be reached. Your credentials were not saved.';
   if (error.code === 'ROOM_FULL') return 'This room is full.';
@@ -627,21 +645,43 @@ export default function App() {
                   {chat.messages.length === 0 && <li className="timeline-empty">No live messages yet.</li>}
                   {chat.messages.map((message) => {
                     const quoted = message.replyTo ? chat.messages.find((item) => item.id === message.replyTo) : undefined;
+                    const isOwn = message.from.id === snapshot.self.id;
+                    const color = senderColor(message.from.id);
+                    const time = new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    if (message.broadcast) {
+                      return (
+                        <li className="timeline-item broadcast-row" key={message.id} data-testid="chat-message">
+                          <div className="broadcast-bubble">
+                            <p className="broadcast-label"><span className="broadcast-badge">Broadcast</span> {message.from.name}</p>
+                            <p className="bubble-text">{message.text}</p>
+                            <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
+                          </div>
+                        </li>
+                      );
+                    }
                     return (
-                      <li className="timeline-item" key={message.id} data-testid="chat-message">
-                        <div className="timeline-meta">
-                          <strong>{message.from.name}</strong>
-                          <span>{message.from.kind}</span>
-                          {message.broadcast && <span className="broadcast-badge">Broadcast</span>}
-                          <time dateTime={message.ts}>{new Date(message.ts).toLocaleTimeString()}</time>
+                      <li className={`timeline-item${isOwn ? ' own' : ''}`} key={message.id} data-testid="chat-message">
+                        {!isOwn && <span className="avatar" style={{ backgroundColor: `${color}26`, color }} aria-hidden="true">{senderInitials(message.from.name)}</span>}
+                        <div className="bubble-col">
+                          <div className={`bubble${isOwn ? ' own' : ''}`}>
+                            {!isOwn && (
+                              <p className="bubble-name" style={{ color }}>
+                                {message.from.name}
+                                {message.from.kind === 'agent' && <span className="bubble-kind">agent</span>}
+                              </p>
+                            )}
+                            {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
+                            <p className="bubble-text">{message.text}</p>
+                            {message.mentions && message.mentions.length > 0 && (
+                              <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
+                            )}
+                            <p className="bubble-time"><time dateTime={message.ts}>{time}</time></p>
+                          </div>
+                          <div className="bubble-actions">
+                            <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
+                            {canControl && <button className="small-button" type="button" aria-label={`Pin message from ${message.from.name}`} onClick={() => chat.sendControl({ action: 'pin', messageId: message.id, text: message.text })}>Pin</button>}
+                          </div>
                         </div>
-                        {message.replyTo && <blockquote className="reply-quote">Replying to {quoted ? `${quoted.from.name}: ${quoted.text.slice(0, 80)}` : 'an earlier message'}</blockquote>}
-                        <p className="timeline-text">{message.text}</p>
-                        {message.mentions && message.mentions.length > 0 && (
-                          <p className="mention-line">Mentions: {message.mentions.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
-                        )}
-                        <button className="small-button" type="button" aria-label={`Reply to message from ${message.from.name}`} onClick={() => setReplyTarget(message)}>Reply</button>
-                        {canControl && <button className="small-button" type="button" aria-label={`Pin message from ${message.from.name}`} onClick={() => chat.sendControl({ action: 'pin', messageId: message.id, text: message.text })}>Pin</button>}
                       </li>
                     );
                   })}
