@@ -9,6 +9,7 @@ import {
   joinRoom,
   leaveRoom,
   recoverOwner,
+  updateAccessCode,
   updateParticipant,
   updateRoom,
   type CreateRoomResponse,
@@ -19,7 +20,7 @@ import {
   type RoomSnapshot,
   type SessionResponse,
 } from './api';
-import { useRoomChat, type ChatErrorCode, type ChatMessage } from './chat';
+import { useRoomChat, type ChatErrorCode, type ChatMessage, type ChatStatus } from './chat';
 
 type Connection = 'checking' | 'connected' | 'unavailable';
 type CredentialType = 'access-code' | 'invitation';
@@ -91,6 +92,13 @@ function modeLabel(mode: RoomMode): string {
   return mode[0].toUpperCase() + mode.slice(1);
 }
 
+function chatStatusLabel(status: ChatStatus): string {
+  if (status === 'live') return 'Live chat connected';
+  if (status === 'connecting') return 'Connecting live chat…';
+  if (status === 'closed') return 'Live chat disconnected';
+  return 'Live chat idle';
+}
+
 function chatErrorText(code: ChatErrorCode): string {
   if (code === 'FORBIDDEN') return 'You cannot send messages with your current role.';
   if (code === 'RATE_LIMITED') return 'Slow down: the room is rate limiting your messages.';
@@ -129,10 +137,11 @@ export default function App() {
   const [settingsMode, setSettingsMode] = useState<RoomMode>('hybrid');
   const [settingsMaxParticipants, setSettingsMaxParticipants] = useState('20');
   const [settingsExpiresAt, setSettingsExpiresAt] = useState('');
+  const [newAccessCode, setNewAccessCode] = useState('');
   const [inviteRole, setInviteRole] = useState<'human' | 'agent' | 'observer'>('human');
   const [inviteName, setInviteName] = useState('');
-  const [inviteMaxUses] = useState('1');
-  const [inviteExpiry] = useState('3600');
+  const [inviteMaxUses, setInviteMaxUses] = useState('1');
+  const [inviteExpiry, setInviteExpiry] = useState('3600');
   const [invitationToken, setInvitationToken] = useState('');
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
   const [chatText, setChatText] = useState('');
@@ -327,6 +336,38 @@ export default function App() {
       });
       if (snapshot) applySnapshot({ ...snapshot, room: result.room });
       setNotice('Room settings saved.');
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRotateAccessCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await updateAccessCode(session.room.id, session.sessionToken, newAccessCode);
+      setNewAccessCode('');
+      setNotice('Access code updated.');
+      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: true } });
+    } catch (requestError) {
+      showError(requestError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDisableAccessCode() {
+    if (!session) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      await updateAccessCode(session.room.id, session.sessionToken, null);
+      setNotice('Access code disabled.');
+      if (snapshot) setSnapshot({ ...snapshot, room: { ...snapshot.room, accessCodeEnabled: false } });
     } catch (requestError) {
       showError(requestError);
     } finally {
@@ -531,28 +572,25 @@ export default function App() {
                   <div>
                     <h1 className="tg-room-title">{snapshot.room.name}</h1>
                     <p className="tg-room-subtitle">
-                      {snapshot.participants.length} participants · {onlineIds.size} online · {modeLabel(snapshot.room.mode)} mode
+                      {snapshot.participants.length} participants · {onlineIds.size} online · {modeLabel(snapshot.room.mode)} mode · {chatStatusLabel(chat.status)}
                     </p>
                   </div>
                 </div>
                 <div className="tg-topbar-right">
-                  <button className="secondary-button" type="button" onClick={refreshSnapshot} disabled={busy}>{busy ? 'Working…' : 'Refresh'}</button>
+                  <button className="secondary-button" type="button" onClick={refreshSnapshot} disabled={busy}>{busy ? 'Working…' : 'Refresh roster'}</button>
                   <button className="secondary-button" type="button" aria-pressed={showGroupInfo} onClick={() => setShowGroupInfo((v) => !v)}>
                     {showGroupInfo ? 'Hide Info ✕' : 'Group Info ℹ️'}
                   </button>
                   {!isOwner ? (
-                    <button className="secondary-button" type="button" onClick={onLeaveRoom} disabled={busy}>Leave</button>
+                    <button className="secondary-button" type="button" onClick={onLeaveRoom} disabled={busy}>Leave room</button>
                   ) : (
-                    <button className="danger-button" type="button" onClick={onDeleteRoom} disabled={busy}>Delete</button>
+                    <button className="danger-button" type="button" onClick={onDeleteRoom} disabled={busy}>Delete room</button>
                   )}
                 </div>
               </header>
 
               <div className="tg-workspace">
                 <section className="tg-chat-pane">
-                  {error && <p className="error-banner" role="alert">{error}</p>}
-                  {notice && <p className="notice" role="status">{notice}</p>}
-                  
                   {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
                   {chat.chatState === 'paused' && <p className="notice" role="status">Room paused by the owner. Sending is limited to the owner and moderators.</p>}
                   {chat.chatState === 'interrupted' && <p className="notice" role="status">Agents interrupted by the owner. Agent messages are blocked until the owner resumes the room.</p>}
@@ -692,7 +730,7 @@ export default function App() {
                       <section className="secret-card" aria-labelledby="owner-key-heading">
                         <p id="owner-key-heading" className="eyebrow">Owner key — shown once</p>
                         <p>Keep this key safe. Needed to recover owner access.</p>
-                        <input className="text-input secret-input" value={ownerKey} readOnly />
+                        <input id="owner-key" className="text-input secret-input" aria-label="Owner key" value={ownerKey} readOnly />
                         <button className="small-button" type="button" onClick={dismissOwnerKey}>I saved the owner key</button>
                       </section>
                     )}
@@ -725,27 +763,28 @@ export default function App() {
                                 <div><strong>{participant.name} · {participant.role}</strong><span className="participant-meta">{participant.kind}{participant.id === snapshot.self.id ? ' · you' : ''}</span></div>
                               </div>
                               {participant.id !== snapshot.self.id && (
-                                <button className="small-button" type="button" onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
+                                <button className="small-button" type="button" aria-pressed={mentionIds.includes(participant.id)} aria-label={`Mention ${participant.name}`} onClick={() => toggleMention(participant.id)}>{mentionIds.includes(participant.id) ? 'Mentioned' : 'Mention'}</button>
                               )}
                               {canControl && participant.role !== 'owner' && participant.id !== snapshot.self.id && !(selfRole === 'moderator' && participant.role === 'moderator') && (
                                 <div className="participant-controls">
                                   {chat.mutedIds.includes(participant.id) ? (
-                                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'unmute', participantId: participant.id })}>Unmute</button>
+                                    <button className="small-button" type="button" aria-label={`Unmute ${participant.name}`} onClick={() => chat.sendControl({ action: 'unmute', participantId: participant.id })}>Unmute</button>
                                   ) : (
-                                    <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'mute', participantId: participant.id })}>Mute</button>
+                                    <button className="small-button" type="button" aria-label={`Mute ${participant.name}`} onClick={() => chat.sendControl({ action: 'mute', participantId: participant.id })}>Mute</button>
                                   )}
-                                  {isOwner && <button className="small-button" type="button" onClick={() => chat.sendControl({ action: 'remove', participantId: participant.id })}>Remove</button>}
+                                  {isOwner && <button className="small-button" type="button" aria-label={`Remove ${participant.name}`} onClick={() => chat.sendControl({ action: 'remove', participantId: participant.id })}>Remove</button>}
                                 </div>
                               )}
                               {isOwner && participant.role !== 'owner' && (
                                 <div className="role-controls">
-                                  <select className="text-input compact-input" value={draft.role} onChange={(event) => updateRoleDraft(participant, { role: event.target.value as Exclude<ParticipantRole, 'owner'> })}>
+                                  <label className="sr-only" htmlFor={`role-${participant.id}`}>Participant role for {participant.name}</label>
+                                  <select id={`role-${participant.id}`} className="text-input compact-input" value={draft.role} onChange={(event) => updateRoleDraft(participant, { role: event.target.value as Exclude<ParticipantRole, 'owner'> })}>
                                     {participant.kind === 'human' && <><option value="human">Human</option><option value="moderator">Moderator</option></>}
                                     {participant.kind === 'agent' && <option value="agent">Agent</option>}
                                     <option value="observer">Observer</option>
                                   </select>
                                   {draft.role === 'moderator' && <label className="saved-check compact-check"><input type="checkbox" checked={draft.canInstruct} onChange={(event) => updateRoleDraft(participant, { canInstruct: event.target.checked })} /><span>Instruct</span></label>}
-                                  <button className="small-button" type="button" onClick={() => onSaveParticipant(participant)} disabled={busy}>Save</button>
+                                  <button className="small-button" type="button" onClick={() => onSaveParticipant(participant)} disabled={busy} aria-label={`Save role for ${participant.name}`}>Save</button>
                                 </div>
                               )}
                             </li>
@@ -760,23 +799,44 @@ export default function App() {
                           <div className="card-heading"><div><p className="eyebrow">Owner</p><h2>Room Settings</h2></div></div>
                           <form onSubmit={onSaveSettings}>
                             <label className="field-label" htmlFor="room-name-setting">Room name</label>
-                            <input id="room-name-setting" className="text-input" value={settingsName} onChange={(event) => setSettingsName(event.target.value)} required maxLength={80} />
+                            <input id="room-name-setting" className="text-input" aria-label="Room name setting" value={settingsName} onChange={(event) => setSettingsName(event.target.value)} required maxLength={80} />
                             <label className="field-label" htmlFor="room-description-setting">Description</label>
-                            <textarea id="room-description-setting" className="text-input textarea" value={settingsDescription} onChange={(event) => setSettingsDescription(event.target.value)} maxLength={500} rows={2} />
+                            <textarea id="room-description-setting" className="text-input textarea" aria-label="Room description setting" value={settingsDescription} onChange={(event) => setSettingsDescription(event.target.value)} maxLength={500} rows={2} />
                             <label className="field-label" htmlFor="room-mode-setting">Access mode</label>
-                            <select id="room-mode-setting" className="text-input" value={settingsMode} onChange={(event) => setSettingsMode(event.target.value as RoomMode)}><option value="public">Public</option><option value="private">Private</option><option value="hybrid">Hybrid</option></select>
-                            <button className="primary-button" type="submit" disabled={busy}>Save settings</button>
+                            <select id="room-mode-setting" className="text-input" aria-label="Room access mode" value={settingsMode} onChange={(event) => setSettingsMode(event.target.value as RoomMode)}><option value="public">Public</option><option value="private">Private</option><option value="hybrid">Hybrid</option></select>
+                            <label className="field-label" htmlFor="max-participants-setting">Maximum participants</label>
+                            <input id="max-participants-setting" className="text-input" type="number" min={snapshot.participants.length} max={100} value={settingsMaxParticipants} onChange={(event) => setSettingsMaxParticipants(event.target.value)} required />
+                            <label className="field-label" htmlFor="room-expiry-setting">Room expires</label>
+                            <input id="room-expiry-setting" className="text-input" type="datetime-local" aria-label="Room expiry" min={toDateTimeLocal(new Date().toISOString())} value={settingsExpiresAt} onChange={(event) => setSettingsExpiresAt(event.target.value)} required />
+                            <button className="primary-button" type="submit" disabled={busy}>Save room settings</button>
                           </form>
+                        </section>
+
+                        <section className="panel-card" aria-labelledby="access-code-heading">
+                          <div className="card-heading"><div><p className="eyebrow">Credential control</p><h2 id="access-code-heading">Access code</h2></div></div>
+                          <p className="field-hint">{snapshot.room.accessCodeEnabled ? 'Enabled. Existing sessions are not affected by rotation.' : 'Disabled. Invitations remain available.'}</p>
+                          <form onSubmit={onRotateAccessCode}>
+                            <label className="field-label" htmlFor="new-access-code">New access code</label>
+                            <input id="new-access-code" className="text-input" type="password" autoComplete="new-password" minLength={12} maxLength={128} value={newAccessCode} onChange={(event) => setNewAccessCode(event.target.value)} required />
+                            <button className="primary-button" type="submit" disabled={busy}>Rotate access code</button>
+                          </form>
+                          {snapshot.room.accessCodeEnabled && <button className="danger-quiet" type="button" onClick={onDisableAccessCode} disabled={busy}>Disable access code</button>}
                         </section>
 
                         <section className="panel-card">
                           <div className="card-heading"><div><p className="eyebrow">Invite</p><h2>Create Invitation</h2></div></div>
                           <form onSubmit={onCreateInvitation}>
-                            <label className="field-label" htmlFor="invitation-role">Role</label>
+                            <label className="field-label" htmlFor="invitation-role">Invitation role</label>
                             <select id="invitation-role" className="text-input" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'human' | 'agent' | 'observer')}><option value="human">Human</option><option value="agent">Agent</option><option value="observer">Observer</option></select>
-                            <button className="primary-button" type="submit" disabled={busy}>Create Invite Token</button>
+                            <label className="field-label" htmlFor="invitation-name">Name (optional)</label>
+                            <input id="invitation-name" className="text-input" aria-label="Invitation name (optional)" value={inviteName} onChange={(event) => setInviteName(event.target.value)} maxLength={60} />
+                            <div className="split-fields">
+                              <div><label className="field-label" htmlFor="invitation-uses">Uses</label><input id="invitation-uses" className="text-input" type="number" min={1} max={100} value={inviteMaxUses} onChange={(event) => setInviteMaxUses(event.target.value)} required /></div>
+                              <div><label className="field-label" htmlFor="invitation-expiry">Expires in seconds</label><input id="invitation-expiry" className="text-input" type="number" min={1} max={86400} value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value)} required /></div>
+                            </div>
+                            <button className="primary-button" type="submit" disabled={busy}>Create invitation</button>
                           </form>
-                          {invitationToken && <div className="secret-result"><input className="text-input secret-input" value={invitationToken} readOnly /><button className="small-button" type="button" onClick={() => setInvitationToken('')}>Hide</button></div>}
+                          {invitationToken && <div className="secret-result"><label className="field-label" htmlFor="invitation-token">Invitation token</label><input id="invitation-token" className="text-input secret-input" value={invitationToken} readOnly /><button className="small-button" type="button" onClick={() => setInvitationToken('')}>Hide invitation token</button></div>}
                         </section>
                       </div>
                     )}
