@@ -149,11 +149,25 @@ export default function App() {
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [mentionIds, setMentionIds] = useState<string[]>([]);
   const [showGroupInfo, setShowGroupInfo] = useState(() => window.innerWidth > 900);
+  const [mentionAlert, setMentionAlert] = useState<string | null>(null);
+  const lastCheckedMsgIdRef = useRef<string | null>(null);
   const chat = useRoomChat({
     roomId: session?.room.id ?? '',
     sessionToken: session?.sessionToken ?? '',
     active: session !== null,
   });
+
+  useEffect(() => {
+    if (!snapshot || chat.messages.length === 0) return;
+    const latest = chat.messages[chat.messages.length - 1];
+    if (latest.id === lastCheckedMsgIdRef.current) return;
+    lastCheckedMsgIdRef.current = latest.id;
+    if (latest.from.id !== snapshot.self.id && latest.mentions?.includes(snapshot.self.id)) {
+      setMentionAlert(`${latest.from.name} mentioned you: "${latest.text.slice(0, 50)}"`);
+      const timer = setTimeout(() => setMentionAlert(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [chat.messages, snapshot]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -568,6 +582,9 @@ export default function App() {
             <div className="tg-room-layout">
               <header className="tg-topbar">
                 <div className="tg-topbar-left">
+                  <button className="small-button tg-menu-btn" type="button" aria-label="Toggle participants navigation" onClick={() => setShowGroupInfo((v) => !v)}>
+                    ☰
+                  </button>
                   <span className="room-avatar" aria-hidden="true">{senderInitials(snapshot.room.name)}</span>
                   <div>
                     <h1 className="tg-room-title">{snapshot.room.name}</h1>
@@ -591,6 +608,12 @@ export default function App() {
 
               <div className="tg-workspace">
                 <section className="tg-chat-pane">
+                  {mentionAlert && (
+                    <div className="mention-alert-banner" role="status">
+                      <span>🔔 {mentionAlert}</span>
+                      <button className="small-button" type="button" onClick={() => setMentionAlert(null)}>Dismiss</button>
+                    </div>
+                  )}
                   {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
                   {chat.chatState === 'paused' && <p className="notice" role="status">Room paused by the owner. Sending is limited to the owner and moderators.</p>}
                   {chat.chatState === 'interrupted' && <p className="notice" role="status">Agents interrupted by the owner. Agent messages are blocked until the owner resumes the room.</p>}
