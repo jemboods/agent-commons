@@ -602,7 +602,13 @@ export default function App() {
 
               <section className="panel-card chat-card" aria-labelledby="chat-heading">
                 <div className="card-heading">
-                  <div><p className="eyebrow">Live only · no history</p><h2 id="chat-heading">Room chat</h2></div>
+                  <div className="chat-title">
+                    <span className="room-avatar" aria-hidden="true">{senderInitials(snapshot.room.name)}</span>
+                    <div>
+                      <h2 id="chat-heading">{snapshot.room.name}</h2>
+                      <p className="chat-subline">Live only · no history</p>
+                    </div>
+                  </div>
                   <span className={`chat-status ${chat.status}`} data-chat-status={chat.status}>{chatStatusLabel(chat.status)}</span>
                 </div>
                 {chat.error && <p className="error-banner" role="alert">{chatErrorText(chat.error)}</p>}
@@ -643,11 +649,13 @@ export default function App() {
                 )}
                 <ol className="timeline" aria-label="Live timeline">
                   {chat.messages.length === 0 && <li className="timeline-empty">No live messages yet.</li>}
-                  {chat.messages.map((message) => {
+                  {chat.messages.map((message, index) => {
                     const quoted = message.replyTo ? chat.messages.find((item) => item.id === message.replyTo) : undefined;
                     const isOwn = message.from.id === snapshot.self.id;
                     const color = senderColor(message.from.id);
                     const time = new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    const previous = index > 0 ? chat.messages[index - 1] : undefined;
+                    const grouped = previous !== undefined && !previous.broadcast && previous.from.id === message.from.id;
                     if (message.broadcast) {
                       return (
                         <li className="timeline-item broadcast-row" key={message.id} data-testid="chat-message">
@@ -660,11 +668,11 @@ export default function App() {
                       );
                     }
                     return (
-                      <li className={`timeline-item${isOwn ? ' own' : ''}`} key={message.id} data-testid="chat-message">
-                        {!isOwn && <span className="avatar" style={{ backgroundColor: `${color}26`, color }} aria-hidden="true">{senderInitials(message.from.name)}</span>}
+                      <li className={`timeline-item${isOwn ? ' own' : ''}${grouped ? ' grouped' : ''}`} key={message.id} data-testid="chat-message">
+                        {!isOwn && <span className={`avatar${grouped ? ' ghost' : ''}`} style={{ backgroundColor: `${color}26`, color }} aria-hidden="true">{senderInitials(message.from.name)}</span>}
                         <div className="bubble-col">
                           <div className={`bubble${isOwn ? ' own' : ''}`}>
-                            {!isOwn && (
+                            {!isOwn && !grouped && (
                               <p className="bubble-name" style={{ color }}>
                                 {message.from.name}
                                 {message.from.kind === 'agent' && <span className="bubble-kind">agent</span>}
@@ -698,11 +706,16 @@ export default function App() {
                     {mentionIds.length > 0 && (
                       <p className="field-hint">Mentions: {mentionIds.map((id) => snapshot.participants.find((participant) => participant.id === id)?.name ?? 'unknown participant').join(', ')}</p>
                     )}
-                    <label className="field-label" htmlFor="chat-message-text">Message</label>
-                    <textarea id="chat-message-text" className="text-input textarea" rows={3} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} placeholder="Plain text only. Markdown and links stay inert." />
+                    <label className="field-label sr-only" htmlFor="chat-message-text">Message</label>
+                    <div className="composer-row">
+                      <textarea id="chat-message-text" className="text-input textarea" rows={1} maxLength={32000} value={chatText} onChange={(event) => { setChatText(event.target.value); chat.notifyTyping(); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Type a message" />
+                      <button className="send-button" type="submit" disabled={!chatText.trim()}>
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.4l17.8-7.5c.8-.35.8-1.45 0-1.8L3.4 3.6c-.66-.29-1.39.2-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .72.73 1.2 1.39.91z" /></svg>
+                        <span className="send-label">Send message</span>
+                      </button>
+                    </div>
                     {isOwner && <button className="small-button" type="button" aria-pressed={broadcastMode} onClick={() => setBroadcastMode((value) => !value)}>Broadcast</button>}
                     {broadcastMode && isOwner && <p className="field-hint">Broadcast mode: the next send is an owner announcement, delivered even while the room is paused.</p>}
-                    <button className="primary-button" type="submit" disabled={!chatText.trim()}>Send message</button>
                   </form>
                 ) : (
                   chat.status === 'live' && <p className="field-hint">You are an observer in this room: live messages are readable, sending is disabled.</p>
