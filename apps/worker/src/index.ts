@@ -17,6 +17,7 @@ const MAX_PIN_TEXT_CHARS = 2_000;
 const TYPING_WINDOW_MS = 2_000;
 const ALLOWED_ORIGINS = new Set([
   'https://jemboods.github.io',
+  'https://agent-commons.doloresblick1.workers.dev',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ]);

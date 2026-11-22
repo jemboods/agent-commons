@@ -441,6 +441,16 @@ it('accepts native clients without Origin and loopback development', async () =>
   socket.close();
 });
 
+it('accepts the production workers.dev origin', async () => {
+  const room = await createRoom();
+  const socket = await connect(room, 'https://agent-commons.doloresblick1.workers.dev');
+  try {
+    const reply = message(socket);
+    join(socket, room.sessionToken);
+    expect(JSON.parse(await reply).type).toBe('welcome');
+  } finally { socket.close(); }
+});
+
 it('does not send membership before join or store a bearer credential in attachments', async () => {
   const room = await createRoom();
   const socket = await connect(room);
