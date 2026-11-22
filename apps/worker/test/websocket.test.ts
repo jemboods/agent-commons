@@ -727,3 +727,98 @@ it('lets a moderator mute a human but not pause or mute the owner', async () => 
     expect(await ownerMuteDenied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
   } finally { owner.close(); moderatorSocket.close(); targetSocket.close(); }
 });
+
+function ack(socket: WebSocket, interruptId: string) {
+  socket.send(JSON.stringify({ v: 1, type: 'interrupt_ack', payload: { interruptId } }));
+}
+
+async function roomSnapshot(room: Access) {
+  const snapshot = await SELF.fetch(`https://example.com/api/rooms/${room.room.id}`, {
+    headers: { authorization: `Bearer ${room.sessionToken}` },
+  });
+  expect(snapshot.status).toBe(200);
+  return snapshot.json() as Promise<{ room: Record<string, unknown>; participants: Record<string, unknown>[] }>;
+}
+
+it('hard interrupt blocks agent messages until resume and records acks', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const agent = await joinGuest(room, 'Worker agent', 'agent');
+  const human = await joinGuest(room, 'Watching human');
+  const agentSocket = await authenticated(agent);
+  const humanSocket = await authenticated(human);
+  try {
+    const interruptEvent = matchingMessage(agentSocket, (event) => event.type === 'interrupt');
+    const stateEvent = matchingMessage(agentSocket, (event) => event.type === 'state');
+    control(owner, { action: 'interrupt', mode: 'hard' });
+    const interrupt = await interruptEvent;
+    expect(interrupt).toMatchObject({ type: 'interrupt', payload: { mode: 'hard', by: room.participant.id } });
+    const interruptId = (interrupt.payload as Record<string, unknown>).interruptId as string;
+    expect(interruptId).toMatch(/^int_[a-f0-9]{32}$/);
+    expect(await stateEvent).toMatchObject({ type: 'state', payload: { chatState: 'interrupted' } });
+
+    const blocked = outcome(agentSocket);
+    chat(agentSocket, { text: 'Agent mencoba bicara' });
+    expect(await blocked).toMatchObject({ type: 'error', payload: { code: 'ROOM_INTERRUPTED' } });
+
+    const humanCopy = matchingMessage(humanSocket, (event) => event.type === 'message');
+    chat(owner, { text: 'Manusia tetap bisa' });
+    expect(await humanCopy).toMatchObject({ type: 'message', payload: { text: 'Manusia tetap bisa' } });
+
+    ack(agentSocket, interruptId);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const view = await roomSnapshot(room);
+    const record = view.room.interrupt as Record<string, unknown>;
+    expect(record.mode).toBe('hard');
+    expect(record.acks).toEqual([agent.participant.id]);
+
+    const resumed = matchingMessage(agentSocket, (event) => event.type === 'state');
+    control(owner, { action: 'resume' });
+    expect(await resumed).toMatchObject({ type: 'state', payload: { chatState: 'active' } });
+
+    const delivered = matchingMessage(humanSocket, (event) => event.type === 'message');
+    chat(agentSocket, { text: 'Agent lanjut lagi' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Agent lanjut lagi' } });
+
+    const cleared = await roomSnapshot(room);
+    expect(cleared.room.interrupt).toBeNull();
+  } finally { owner.close(); agentSocket.close(); humanSocket.close(); }
+});
+
+it('soft interrupt notifies agents without blocking their messages', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const agent = await joinGuest(room, 'Soft agent', 'agent');
+  const agentSocket = await authenticated(agent);
+  try {
+    const interruptEvent = matchingMessage(agentSocket, (event) => event.type === 'interrupt');
+    control(owner, { action: 'interrupt', mode: 'soft' });
+    expect(await interruptEvent).toMatchObject({ type: 'interrupt', payload: { mode: 'soft' } });
+
+    const delivered = matchingMessage(owner, (event) => event.type === 'message');
+    chat(agentSocket, { text: 'Agent tetap jalan' });
+    expect(await delivered).toMatchObject({ type: 'message', payload: { text: 'Agent tetap jalan' } });
+
+    const view = await roomSnapshot(room);
+    expect(view.room.chatState).toBe('active');
+    expect((view.room.interrupt as Record<string, unknown>).mode).toBe('soft');
+  } finally { owner.close(); agentSocket.close(); }
+});
+
+it('rejects interrupt from a participant who is not the owner', async () => {
+  const room = await createRoom();
+  const owner = await authenticated(room);
+  const agent = await joinGuest(room, 'Guard agent', 'agent');
+  const human = await joinGuest(room, 'Plain human');
+  const agentSocket = await authenticated(agent);
+  const humanSocket = await authenticated(human);
+  try {
+    const denied = outcome(humanSocket);
+    control(humanSocket, { action: 'interrupt', mode: 'hard' });
+    expect(await denied).toMatchObject({ type: 'error', payload: { code: 'FORBIDDEN' } });
+
+    const view = await roomSnapshot(room);
+    expect(view.room.interrupt).toBeNull();
+    expect(view.room.chatState).toBe('active');
+  } finally { owner.close(); agentSocket.close(); humanSocket.close(); }
+});
