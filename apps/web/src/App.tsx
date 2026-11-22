@@ -83,6 +83,7 @@ export default function App() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
+  const [createdAccessCode, setCreatedAccessCode] = useState('');
   const [keySaved, setKeySaved] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -124,6 +125,37 @@ export default function App() {
       })
       .catch(() => { if (!controller.signal.aborted) setConnection('unavailable'); });
     return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const invite = params.get('invite');
+    const room = params.get('room');
+    const code = params.get('accessCode') || params.get('code');
+    const token = params.get('invitation');
+
+    if (invite) {
+      try {
+        const decoded = JSON.parse(atob(invite.replaceAll('-', '+').replaceAll('_', '/')));
+        if (decoded.r) setJoinRoomId(decoded.r);
+        if (decoded.c) {
+          setCredentialType('access-code');
+          setJoinCredential(decoded.c);
+        } else if (decoded.i) {
+          setCredentialType('invitation');
+          setJoinCredential(decoded.i);
+        }
+      } catch {}
+    } else {
+      if (room) setJoinRoomId(room);
+      if (code) {
+        setCredentialType('access-code');
+        setJoinCredential(code);
+      } else if (token) {
+        setCredentialType('invitation');
+        setJoinCredential(token);
+      }
+    }
   }, []);
 
   // Presence can reveal a participant who joined after this page's snapshot
@@ -184,6 +216,7 @@ export default function App() {
     try {
       const result: CreateRoomResponse = await createRoom({ name: roomName, ownerName, accessCode });
       const { ownerKey: createdOwnerKey, ...sessionResponse } = result;
+      setCreatedAccessCode(accessCode);
       const initialSnapshot: RoomSnapshot = { room: result.room, participants: [result.participant], self: result.participant };
       setOwnerKey(createdOwnerKey);
       setKeySaved(false);
@@ -489,6 +522,19 @@ export default function App() {
                   <label className="field-label" htmlFor="owner-key">Owner key</label>
                   <input id="owner-key" className="text-input secret-input" value={ownerKey} readOnly />
                   <button className="small-button" type="button" onClick={dismissOwnerKey}>I saved the owner key</button>
+                </section>
+              )}
+              {isOwner && createdAccessCode && (
+                <section className="secret-card" aria-labelledby="invite-link-heading">
+                  <p id="invite-link-heading" className="eyebrow">Shareable invite link</p>
+                  <p>Send this short link to participants so they can join automatically with the room ID and access code pre-filled.</p>
+                  <label className="field-label" htmlFor="invite-link">Invite link</label>
+                  <input id="invite-link" className="text-input secret-input" value={`${window.location.origin}${window.location.pathname}?invite=${btoa(JSON.stringify({ r: session.room.id, c: createdAccessCode })).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}`} readOnly />
+                  <button className="small-button" type="button" onClick={() => {
+                    const link = `${window.location.origin}${window.location.pathname}?invite=${btoa(JSON.stringify({ r: session.room.id, c: createdAccessCode })).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}`;
+                    navigator.clipboard.writeText(link);
+                    setNotice('Invite link copied to clipboard.');
+                  }}>Copy invite link</button>
                 </section>
               )}
               {keySaved && <p className="notice">Owner key hidden. It will not be shown again.</p>}
